@@ -4,3 +4,6 @@ EMS_UI/.vscode/
 EMS_SERVICES/target/
 EMS_SERVICES/.vscode/
 EMS_SERVICES/.github/
+.env
+.env.*
+!.env.example

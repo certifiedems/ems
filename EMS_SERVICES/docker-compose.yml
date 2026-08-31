@@ -34,6 +34,10 @@ services:
       JWT_ISSUER: ems-backend
       DB_POOL_MAX_SIZE: 30
       DB_POOL_MIN_IDLE: 10
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:?Set R2_ACCOUNT_ID in environment}
+      R2_ACCESS_KEY: ${R2_ACCESS_KEY:?Set R2_ACCESS_KEY in environment}
+      R2_SECRET_KEY: ${R2_SECRET_KEY:?Set R2_SECRET_KEY in environment}
+      R2_BUCKET: ${R2_BUCKET:-ems-profile-photos}
     ports:
       - "8080:8080"
     healthcheck:

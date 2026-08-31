@@ -14,6 +14,7 @@ import java.util.UUID;
 import javax.imageio.ImageIO;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpStatus;
@@ -24,6 +25,7 @@ import com.ems.service.ProfilePhotoContent;
 import com.ems.service.ProfilePhotoStorageService;
 
 @Service
+@Profile("!prod")
 public class LocalProfilePhotoStorageService implements ProfilePhotoStorageService {
 
 	private static final long DEFAULT_MAX_SIZE_BYTES = 5L * 1024L * 1024L;

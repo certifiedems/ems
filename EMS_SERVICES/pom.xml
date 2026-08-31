@@ -23,6 +23,7 @@
         <jjwt.version>0.12.6</jjwt.version>
         <springdoc.version>2.6.0</springdoc.version>
         <lombok.version>1.18.34</lombok.version>
+        <awssdk.version>2.29.1</awssdk.version>
     </properties>
 
     <dependencies>
@@ -132,6 +133,14 @@
             <groupId>com.google.zxing</groupId>
             <artifactId>javase</artifactId>
             <version>3.5.3</version>
+        </dependency>
+
+        <!-- Cloudflare R2 is S3-compatible; 2.29.x predates the default
+             flexible-checksum headers that R2 rejects. -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>s3</artifactId>
+            <version>${awssdk.version}</version>
         </dependency>
 
         <dependency>
