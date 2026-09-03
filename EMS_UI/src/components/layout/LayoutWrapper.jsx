@@ -21,6 +21,7 @@ import GroupIcon from '@mui/icons-material/GroupRounded'
 import QuizIcon from '@mui/icons-material/QuizRounded'
 import GavelIcon from '@mui/icons-material/GavelRounded'
 import EventNoteIcon from '@mui/icons-material/EventNoteRounded'
+import DateRangeIcon from '@mui/icons-material/DateRangeRounded'
 import TableChartIcon from '@mui/icons-material/TableChartRounded'
 import PaidIcon from '@mui/icons-material/PaidRounded'
 import { logout } from '../../store/slices/authSlice'
@@ -60,6 +61,9 @@ const LayoutWrapper = ({ children }) => {
     { label: 'Overview', icon: <AnalyticsIcon />, path: '/admin/dashboard' },
     { label: 'Users', icon: <GroupIcon />, path: '/admin/users' },
     { label: 'Exams', icon: <EventNoteIcon />, path: '/admin/exams' },
+    // Sits directly under Exams: it is the same subject seen from the other
+    // side — what an exam is, then when it can be sat.
+    { label: 'Booking Windows', icon: <DateRangeIcon />, path: '/admin/booking-windows' },
     { label: 'Questions', icon: <QuizIcon />, path: '/admin/questions' },
     { label: 'Payments', icon: <PaidIcon />, path: '/admin/payments' },
     { label: 'Exam Reports', icon: <TableChartIcon />, path: '/admin/exam-reports' },

@@ -47,6 +47,29 @@ export const examWindowState = (app) => {
 }
 
 /**
+ * Whether the exam itself will still take a booking.
+ *
+ * The exam carries its own window — the stretch of calendar time in which any
+ * slot at all may be booked — which is a different thing from the ten minutes
+ * either side of a slot already booked. Once it has closed there is no time
+ * left to move to, so every screen that offers to reschedule has to stop
+ * offering it: the picker would refuse every date the candidate tried, and the
+ * refusals name the date they picked, so it reads as their choice being wrong
+ * rather than the window being gone.
+ *
+ * A row with no bound is treated as open, matching `examWindowState`: the
+ * server has the final say, and guessing "closed" here would take the button
+ * away from a candidate who could still use it.
+ */
+export const bookingWindowClosed = (app) => {
+  if (!app?.bookingClosesAt) {
+    return false
+  }
+  const closesAt = new Date(app.bookingClosesAt).getTime()
+  return Number.isFinite(closesAt) && Date.now() > closesAt
+}
+
+/**
  * The single step an application is waiting on.
  *
  * @param {object} app a dashboard `examStatuses` row
@@ -95,7 +118,16 @@ export const nextStep = (app) => {
     case 'EARLY':
       return { route: `/exam/schedule/${applicationId}`, label: 'View Booking' }
     case 'MISSED':
-      return { route: `/exam/schedule/${applicationId}`, label: 'Reschedule Exam' }
+      /*
+       * "Reschedule Exam" is a promise that a new slot can be had. With the
+       * exam's booking window shut it cannot, so the label drops the promise
+       * and the screen it leads to explains what happened — the candidate still
+       * needs somewhere to go and something to read, just not a button that
+       * sends them into a picker with no valid answer in it.
+       */
+      return bookingWindowClosed(app)
+        ? { route: `/exam/schedule/${applicationId}`, label: 'View Booking' }
+        : { route: `/exam/schedule/${applicationId}`, label: 'Reschedule Exam' }
     default:
       return { route: `/exam/${applicationId}`, label: 'Start Exam' }
   }

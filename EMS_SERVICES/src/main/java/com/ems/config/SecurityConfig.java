@@ -3,6 +3,7 @@ package com.ems.config;
 import java.util.List;
 
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -32,13 +33,14 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import com.ems.security.JwtAuthenticationFilter;
 import com.ems.security.JwtProperties;
 import com.ems.security.AuthRateLimitFilter;
+import com.ems.security.MaintenanceGateFilter;
 import com.ems.security.RestAccessDeniedHandler;
 import com.ems.security.RestAuthenticationEntryPoint;
 
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties({ JwtProperties.class, RazorpayProperties.class })
+@EnableConfigurationProperties({ JwtProperties.class, RazorpayProperties.class, MaintenanceProperties.class })
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
@@ -46,18 +48,21 @@ public class SecurityConfig {
     private final RestAccessDeniedHandler restAccessDeniedHandler;
     private final UserDetailsService userDetailsService;
     private final AuthRateLimitFilter authRateLimitFilter;
+    private final MaintenanceGateFilter maintenanceGateFilter;
 
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter,
             RestAuthenticationEntryPoint restAuthenticationEntryPoint,
             RestAccessDeniedHandler restAccessDeniedHandler,
             UserDetailsService userDetailsService,
-            AuthRateLimitFilter authRateLimitFilter) {
+            AuthRateLimitFilter authRateLimitFilter,
+            MaintenanceGateFilter maintenanceGateFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
         this.restAuthenticationEntryPoint = restAuthenticationEntryPoint;
         this.restAccessDeniedHandler = restAccessDeniedHandler;
         this.userDetailsService = userDetailsService;
         this.authRateLimitFilter = authRateLimitFilter;
+        this.maintenanceGateFilter = maintenanceGateFilter;
     }
 
     @Bean
@@ -98,14 +103,24 @@ public class SecurityConfig {
                                 "/swagger-ui/**",
                                 "/swagger-ui.html",
                                 "/actuator/health/**",
-                                "/actuator/info"
+                                "/actuator/info",
+                                // Liveness probe for the UI's maintenance screen.
+                                // Unauthenticated by necessity: a client whose
+                                // token expired while the API was down still has
+                                // to be able to ask why it is being refused.
+                                "/api/system/**"
                         ).permitAll()
                         .requestMatchers("/api/admin/**", "/api/auth/admin/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated())
                 .authenticationProvider(authenticationProvider(userDetailsService, passwordEncoder()))
                 .addFilterBefore(authRateLimitFilter, UsernamePasswordAuthenticationFilter.class)
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
+                // After the JWT filter so the SecurityContext is populated and
+                // the gate can recognise an administrator, but still before
+                // authorization runs, so a signed-out caller receives the 503
+                // that explains the maintenance rather than a bare 401.
+                .addFilterAfter(maintenanceGateFilter, JwtAuthenticationFilter.class);
 
         return http.build();
     }
@@ -129,6 +144,23 @@ public class SecurityConfig {
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
+    }
+
+    /**
+     * Keeps the gate out of the plain servlet filter chain.
+     *
+     * <p>Boot auto-registers every {@code Filter} bean against all requests. For
+     * this one that would be actively wrong: the duplicate copy runs before
+     * Spring Security has authenticated anyone, so it would see an empty
+     * SecurityContext and refuse administrators along with everybody else —
+     * locking the team out of the system exactly when they are working on it.
+     */
+    @Bean
+    public FilterRegistrationBean<MaintenanceGateFilter> maintenanceGateFilterRegistration(
+            MaintenanceGateFilter filter) {
+        FilterRegistrationBean<MaintenanceGateFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean

@@ -96,6 +96,8 @@ public class DashboardServiceImpl implements DashboardService {
 			application.getScheduledExamTime(),
 			ExamStartWindow.opensAt(application.getScheduledExamTime()),
 			ExamStartWindow.closesAt(application.getScheduledExamTime()),
+			application.getExam() == null ? null : application.getExam().getScheduledStartTime(),
+			application.getExam() == null ? null : application.getExam().getScheduledEndTime(),
 			hasAttemptInProgress(application)))
 		.toList();
 

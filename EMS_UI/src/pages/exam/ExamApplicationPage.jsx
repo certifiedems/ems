@@ -16,7 +16,7 @@ import SyllabusPanel from '../../components/syllabus/SyllabusPanel'
 import PageHeader from '../../components/common/PageHeader'
 import SyllabusDialog from '../../components/syllabus/SyllabusDialog'
 import { getSyllabus } from '../../data/syllabus'
-import { examWindowState, formatExamSlot, isClosedStatus, nextStep } from '../../utils/examJourney'
+import { bookingWindowClosed, examWindowState, formatExamSlot, isClosedStatus, nextStep } from '../../utils/examJourney'
 import AddIcon from '@mui/icons-material/AddRounded'
 import AssignmentIcon from '@mui/icons-material/AssignmentRounded'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
@@ -175,6 +175,18 @@ const ExamApplicationPage = () => {
   }
 
   const handleApply = async () => {
+    /*
+     * Guarded as well as disabled. The option cannot be picked while its exam is
+     * outside its booking window, but the window can lapse between opening this
+     * dialog and pressing Apply — and the next screen after this one is payment,
+     * which is the last place to discover the exam cannot be booked.
+     */
+    const chosen = (options?.availableExams || []).find((ex) => String(ex.examId) === String(selectedExamId))
+    const chosenIssue = chosen ? bookingIssue(chosen) : null
+    if (chosenIssue) {
+      setError(chosenIssue)
+      return
+    }
     setSubmitting(true)
     setError('')
     try {
@@ -196,6 +208,26 @@ const ExamApplicationPage = () => {
   const eligible = options?.eligibility?.eligible !== false
   const availableExams = options?.availableExams || []
   const wizardSyllabus = getSyllabus(level)
+
+  /*
+   * Whether an exam can actually be booked, on the same bounds the server
+   * checks. An exam outside its window is still listed — hiding it would leave
+   * "No exams are currently available" as the only explanation for a level the
+   * candidate can plainly see they are eligible for — but it cannot be picked,
+   * because the step straight after this one takes their money.
+   */
+  const bookingIssue = (exam) => {
+    const now = Date.now()
+    const opensAt = exam.scheduledStartTime ? new Date(exam.scheduledStartTime).getTime() : null
+    const closesAt = exam.scheduledEndTime ? new Date(exam.scheduledEndTime).getTime() : null
+    if (closesAt !== null && now > closesAt) {
+      return `Stopped taking bookings on ${formatExamSlot(exam.scheduledEndTime)} — contact support.`
+    }
+    if (opensAt !== null && now < opensAt) {
+      return `Opens for booking on ${formatExamSlot(exam.scheduledStartTime)}.`
+    }
+    return null
+  }
 
   const groupedApplications = applications.reduce((acc, app) => {
     const levelKey = app.certificationLevel || 'UNKNOWN'
@@ -231,10 +263,12 @@ const ExamApplicationPage = () => {
       >
         {availableExams.map((ex) => {
           const selected = selectedExamId === String(ex.examId)
+          const issue = bookingIssue(ex)
           return (
             <FormControlLabel
               key={ex.examId}
               value={String(ex.examId)}
+              disabled={Boolean(issue)}
               control={<Radio sx={{ p: 0, mr: 1.75, color: 'rgba(150,195,172,.35)' }} />}
               sx={{
                 m: 0,
@@ -244,6 +278,7 @@ const ExamApplicationPage = () => {
                 transition: 'background .15s, border-color .15s',
                 background: selected ? 'rgba(192,138,46,.12)' : 'rgba(95,174,146,.06)',
                 border: `1.5px solid ${selected ? 'rgba(192,138,46,.5)' : tokens.line}`,
+                ...(issue && { opacity: 0.55, background: 'rgba(150,195,172,.04)' }),
               }}
               label={
                 <Box sx={{ minWidth: 0 }}>
@@ -251,6 +286,17 @@ const ExamApplicationPage = () => {
                   <Typography sx={{ mt: 0.5, fontFamily: fonts.mono, fontSize: 11.5, color: '#93AC9E' }}>
                     {ex.examCode} · {ex.durationMinutes} min · Pass {String(ex.passingPercentage)}%
                   </Typography>
+                  {/*
+                    * The reason sits on the row rather than in a tooltip. A
+                    * greyed option with no explanation reads as a bug in the
+                    * page, and this one is the difference between "come back
+                    * later" and "someone has to reopen this for you".
+                    */}
+                  {issue && (
+                    <Typography sx={{ mt: 0.75, fontSize: 12, lineHeight: 1.5, color: '#E0A0A0' }}>
+                      {issue}
+                    </Typography>
+                  )}
                 </Box>
               }
             />
@@ -259,6 +305,12 @@ const ExamApplicationPage = () => {
       </RadioGroup>
     )
   }
+
+  /** The chosen exam's booking problem, if the one they picked has developed one. */
+  const selectedExamIssue = (() => {
+    const chosen = availableExams.find((ex) => String(ex.examId) === String(selectedExamId))
+    return chosen ? bookingIssue(chosen) : null
+  })()
 
   const banners = (
     <>
@@ -424,8 +476,10 @@ const ExamApplicationPage = () => {
                     const failed = isClosed(app.applicationStatus)
                     // Offered next to Start, so a candidate who wants a different
                     // time does not have to guess that the start screen is where
-                    // rescheduling lives.
-                    const showReschedule = Boolean(step?.label === 'Start Exam')
+                    // rescheduling lives. Withheld once the exam has stopped
+                    // taking bookings: there is no slot left to move to, and the
+                    // button would only lead to a picker that refuses every date.
+                    const showReschedule = Boolean(step?.label === 'Start Exam') && !bookingWindowClosed(app)
                     const slot = formatExamSlot(app.scheduledExamTime)
                     // Outside the window `step` already points at the booking
                     // screen, so this only has to name what happened to the
@@ -433,6 +487,14 @@ const ExamApplicationPage = () => {
                     const slotLabel = app.attemptInProgress
                       ? 'Started'
                       : examWindowState(app) === 'MISSED' ? 'Missed' : 'Booked'
+                    // Said on the row itself, not left for the screen behind the
+                    // button. A slot marked "Missed" beside no way to rebook is
+                    // the product looking broken; naming the reason is the whole
+                    // difference between that and a candidate who knows to ask.
+                    const bookingShut = !failed
+                      && app.applicationStatus !== 'PASSED'
+                      && !app.attemptInProgress
+                      && bookingWindowClosed(app)
 
                     return (
                       <Box
@@ -520,6 +582,15 @@ const ExamApplicationPage = () => {
                             )}
                           </Box>
                         </Box>
+
+                        {bookingShut && (
+                          <Box sx={{ pl: '21px' }}>
+                            <Typography sx={{ fontSize: 12.5, lineHeight: 1.5, color: '#E0A0A0' }}>
+                              This exam stopped taking bookings on {formatExamSlot(app.bookingClosesAt)}.
+                              Contact support to have the window reopened — your payment stays on this application.
+                            </Typography>
+                          </Box>
+                        )}
 
                         {(app.remarks || app.restartRequired) && (
                           <Box sx={{ pl: '21px' }}>
@@ -837,7 +908,7 @@ const ExamApplicationPage = () => {
           <Button
             variant="contained"
             onClick={handleNext}
-            disabled={submitting || optionsLoading || (activeStep === 1 && !selectedExamId)}
+            disabled={submitting || optionsLoading || (activeStep === 1 && (!selectedExamId || Boolean(selectedExamIssue)))}
             sx={{ ...ctaButton, width: 'auto', height: 40, px: 2.75, fontSize: 12, letterSpacing: '.5px', borderRadius: '10px' }}
           >
             {activeStep === 0 ? 'Next' : submitting ? 'Applying…' : 'Apply'}

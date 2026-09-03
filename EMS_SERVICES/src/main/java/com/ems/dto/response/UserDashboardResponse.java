@@ -63,6 +63,22 @@ public record UserDashboardResponse(
             Instant examWindowEnd,
 
             /**
+             * The stretch of calendar time in which a slot may be booked at all.
+             *
+             * <p>The exam's own window, not the grace around a booking, so it
+             * bounds every slot the candidate could pick rather than the one
+             * they already picked. Null when the application carries no exam, or
+             * when the exam leaves that bound open.</p>
+             *
+             * <p>The applications list reads it to know whether "Reschedule" can
+             * lead anywhere: once this has closed there is no time left to move
+             * to, and offering the button sends the candidate to a picker that
+             * will refuse every date they try.</p>
+             */
+            Instant bookingOpensAt,
+            Instant bookingClosesAt,
+
+            /**
              * Whether an attempt on this application is still running.
              *
              * <p>The status alone cannot say. {@code IN_PROGRESS} means the

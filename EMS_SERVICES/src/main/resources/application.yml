@@ -105,6 +105,17 @@ info:
     version: 0.0.1-SNAPSHOT
 
 app:
+  # Build identifier, stamped by the deploy pipeline so the running version is
+  # visible on the UI's maintenance screen without shelling into the host.
+  version: ${APP_VERSION:dev}
+  # Planned-downtime switch. Turn MAINTENANCE_MODE on before a migration or a
+  # schema-changing deploy: the API answers 503 (administrators excepted) and
+  # /api/system/status keeps reporting why, which is what the frontend renders.
+  maintenance:
+    enabled: ${MAINTENANCE_MODE:false}
+    message: ${MAINTENANCE_MESSAGE:We are performing scheduled maintenance. The service will be back shortly.}
+    eta: ${MAINTENANCE_ETA:}
+    retry-after-seconds: ${MAINTENANCE_RETRY_AFTER_SECONDS:60}
   data:
     mode: ${APP_DATA_MODE:sql}
   storage:

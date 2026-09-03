@@ -29,7 +29,7 @@ import useSoundEnvironmentMonitor from '../../hooks/useSoundEnvironmentMonitor'
 import { markSessionActive } from '../../hooks/useIdleTimeout'
 import { captureEvidenceFrame } from '../../utils/evidenceCapture'
 import { PROCTOR_VIDEO_CONSTRAINTS, describeFramingReasons } from '../../utils/proctorCapture'
-import { examWindowState, formatCountdown, formatExamClock, formatExamSlot } from '../../utils/examJourney'
+import { bookingWindowClosed, examWindowState, formatCountdown, formatExamClock, formatExamSlot } from '../../utils/examJourney'
 import VideocamIcon from '@mui/icons-material/Videocam'
 import VideocamOffIcon from '@mui/icons-material/VideocamOff'
 import MicIcon from '@mui/icons-material/Mic'
@@ -436,6 +436,13 @@ const ExamPage = () => {
   const startsTooEarly = bookingWindowState === 'EARLY'
   const slotMissed = bookingWindowState === 'MISSED'
   const bookingBlocked = startsTooEarly || slotMissed
+  /*
+   * The exam has stopped taking bookings, so the way out of a missed slot that
+   * this alert normally offers does not exist. It still sends the candidate to
+   * the schedule screen — that is where the explanation lives — but it must not
+   * promise a new time on the way.
+   */
+  const rebookingClosed = bookingWindowClosed(booking)
 
   /*
    * Only ticks while the candidate is actually waiting for a window to open, so
@@ -2499,16 +2506,21 @@ const ExamPage = () => {
                       color="inherit"
                       onClick={() => navigate(`/exam/schedule/${applicationId}`)}
                     >
-                      {slotMissed ? 'Pick a new time' : 'Reschedule'}
+                      {rebookingClosed ? 'View booking' : slotMissed ? 'Pick a new time' : 'Reschedule'}
                     </Button>
                   }
                 >
                   {slotMissed
-                    ? `Your slot of ${formatExamSlot(booking.scheduledExamTime)} has passed — it closed at
-                       ${formatExamClock(booking.examWindowEnd)}. Rebook to sit the exam; your payment still stands.`
+                    ? rebookingClosed
+                      ? `Your slot of ${formatExamSlot(booking.scheduledExamTime)} has passed — it closed at
+                         ${formatExamClock(booking.examWindowEnd)} — and this exam stopped taking bookings on
+                         ${formatExamSlot(booking.bookingClosesAt)}. Contact support to have the window reopened;
+                         your payment still stands.`
+                      : `Your slot of ${formatExamSlot(booking.scheduledExamTime)} has passed — it closed at
+                         ${formatExamClock(booking.examWindowEnd)}. Rebook to sit the exam; your payment still stands.`
                     : `Your exam is booked for ${formatExamSlot(booking.scheduledExamTime)} and opens in
                        ${formatCountdown(new Date(booking.examWindowStart).getTime() - windowNow)}, at
-                       ${formatExamClock(booking.examWindowStart)}. Come back then, or move your booking earlier.`}
+                       ${formatExamClock(booking.examWindowStart)}. Come back then${rebookingClosed ? '.' : ', or move your booking earlier.'}`}
                 </Alert>
               )}
 

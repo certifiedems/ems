@@ -3,6 +3,8 @@ package com.ems.service.impl;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -85,6 +87,11 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	private static final TypeReference<Map<String, List<String>>> ANSWER_MAP_TYPE = new TypeReference<>() {
 	};
 
+	/** How a booking-window bound is written into a refusal. See {@link #formatWindowBound}. */
+	private static final DateTimeFormatter WINDOW_BOUND_FORMAT = DateTimeFormatter
+			.ofPattern("d MMM uuuu, HH:mm 'UTC'")
+			.withZone(ZoneOffset.UTC);
+
 	private final CertificationJourneyService certificationJourneyService;
 	private final CertificationApplicationRepository certificationApplicationRepository;
 	private final CertificationRepository certificationRepository;
@@ -161,6 +168,18 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 					"Selected exam does not match requested certification level",
 					HttpStatus.BAD_REQUEST);
 		}
+		/*
+		 * Refused here, before an application exists and long before anyone is
+		 * charged. Without this a candidate could apply for an exam whose
+		 * booking window has closed, pay for it, and only then reach the
+		 * scheduling step to be told there is no date they can pick — holding a
+		 * paid application that can never be used. The window is the one
+		 * precondition of this flow that is checked at the far end of it.
+		 */
+		String bookingIssue = evaluateBookingWindowIssue(exam);
+		if (bookingIssue != null) {
+			throw new BusinessException(bookingIssue, HttpStatus.BAD_REQUEST);
+		}
 
 		CertificationApplication application = CertificationApplication.builder()
 				.user(user)
@@ -179,6 +198,22 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	@Override
 	@CacheEvict(cacheNames = "dashboard", allEntries = true)
 	public PaymentResponse initiatePayment(String email, Long applicationId, PaymentInitiationRequest request) {
+		/*
+		 * The last gap where money could still be taken for a sitting that can
+		 * never happen. Applying already checks the window, but an application
+		 * made while the window was open can be paid for after it has shut —
+		 * the candidate leaves the tab open overnight, or the window lapses
+		 * between the two clicks. Checked here rather than at completion:
+		 * refusing after the gateway has charged them is the one outcome worse
+		 * than letting it through.
+		 */
+		CertificationApplication application = findApplication(email, applicationId);
+		if (application.getExam() != null) {
+			String bookingIssue = evaluateBookingWindowIssue(application.getExam());
+			if (bookingIssue != null) {
+				throw new BusinessException(bookingIssue, HttpStatus.BAD_REQUEST);
+			}
+		}
 		return paymentService.initiatePayment(email, applicationId, request);
 	}
 
@@ -236,6 +271,27 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 			throw new BusinessException(reScheduleIssue, HttpStatus.BAD_REQUEST);
 		}
 
+		Exam exam = application.getExam();
+		Instant now = Instant.now();
+		Instant bookingOpensAt = exam.getScheduledStartTime();
+		Instant bookingClosesAt = exam.getScheduledEndTime();
+
+		/*
+		 * Checked before anything about the requested time, because when the
+		 * exam's own window has run out there is no time the candidate could
+		 * name that would be accepted. Reported as a fault in their pick — which
+		 * is what "cannot be later than the exam window end" reads as — it sends
+		 * them back to the picker to try another date, and another, with every
+		 * one of them refused for the same reason they were not told.
+		 */
+		if (bookingClosesAt != null && now.isAfter(bookingClosesAt)) {
+			throw new BusinessException(
+					"Booking for this exam closed on " + formatWindowBound(bookingClosesAt)
+							+ ", so there is no slot left to move to. Contact support to have the exam"
+							+ " window reopened — your payment stays on this application.",
+					HttpStatus.BAD_REQUEST);
+		}
+
 		/*
 		 * A slot is only worth booking if it can still be attended. The bound is
 		 * the close of the window rather than the booked time itself, because a
@@ -244,19 +300,28 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 		 * minutes old — refusing that would block the one booking they are most
 		 * likely to make.
 		 */
-		if (ExamStartWindow.hasClosed(request.scheduledExamTime(), Instant.now())) {
+		if (ExamStartWindow.hasClosed(request.scheduledExamTime(), now)) {
 			throw new BusinessException(
 					"That time has already passed. Pick a slot you can still attend.",
 					HttpStatus.BAD_REQUEST);
 		}
 
-		Exam exam = application.getExam();
-		if (exam.getScheduledStartTime() != null && request.scheduledExamTime().isBefore(exam.getScheduledStartTime())) {
-			throw new BusinessException("Scheduled exam time cannot be earlier than the exam window start",
+		/*
+		 * Both bounds are named in full. The candidate is being turned away from
+		 * a date they chose deliberately, and a refusal that does not say which
+		 * dates would have worked leaves them guessing at a range only the
+		 * server can see.
+		 */
+		if (bookingOpensAt != null && request.scheduledExamTime().isBefore(bookingOpensAt)) {
+			throw new BusinessException(
+					"This exam opens for booking on " + formatWindowBound(bookingOpensAt)
+							+ ". Pick a time from then onwards.",
 					HttpStatus.BAD_REQUEST);
 		}
-		if (exam.getScheduledEndTime() != null && request.scheduledExamTime().isAfter(exam.getScheduledEndTime())) {
-			throw new BusinessException("Scheduled exam time cannot be later than the exam window end",
+		if (bookingClosesAt != null && request.scheduledExamTime().isAfter(bookingClosesAt)) {
+			throw new BusinessException(
+					"This exam can only be booked up to " + formatWindowBound(bookingClosesAt)
+							+ ". Pick an earlier time.",
 					HttpStatus.BAD_REQUEST);
 		}
 
@@ -598,9 +663,28 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 					HttpStatus.CONFLICT);
 		}
 
+		/*
+		 * Checked before the new application is created, for the same reason as
+		 * in createApplication: a re-application is followed straight away by a
+		 * second payment, and one taken for a sitting that can never be booked
+		 * is the worst outcome this flow has.
+		 *
+		 * An exam that has been unpublished or moved off SCHEDULED is refused
+		 * here too. It used to be quietly dropped to null, which produced an
+		 * application linked to no exam — payable, and then permanently stuck at
+		 * "Application is not linked to an exam".
+		 */
 		Exam exam = failedApplication.getExam();
 		if (exam == null || !exam.isPublished() || exam.getExamStatus() != ExamStatus.SCHEDULED) {
-			exam = null;
+			throw new BusinessException(
+					"The " + failedApplication.getCertificationLevel()
+							+ " exam is not open for applications at the moment. Contact support before"
+							+ " paying again — nothing has been charged.",
+					HttpStatus.BAD_REQUEST);
+		}
+		String bookingIssue = evaluateBookingWindowIssue(exam);
+		if (bookingIssue != null) {
+			throw new BusinessException(bookingIssue, HttpStatus.BAD_REQUEST);
 		}
 
 		CertificationApplication newApplication = CertificationApplication.builder()
@@ -627,6 +711,8 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				saved.getScheduledExamTime(),
 				ExamStartWindow.opensAt(saved.getScheduledExamTime()),
 				ExamStartWindow.closesAt(saved.getScheduledExamTime()),
+				exam == null ? null : exam.getScheduledStartTime(),
+				exam == null ? null : exam.getScheduledEndTime(),
 				saved.getRemarks(),
 				false,
 				isViolationRestartRequired(saved),
@@ -668,6 +754,8 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				application.getScheduledExamTime(),
 				ExamStartWindow.opensAt(application.getScheduledExamTime()),
 				ExamStartWindow.closesAt(application.getScheduledExamTime()),
+				application.getExam() == null ? null : application.getExam().getScheduledStartTime(),
+				application.getExam() == null ? null : application.getExam().getScheduledEndTime(),
 				application.getRemarks(),
 				canReApply,
 				isViolationRestartRequired(application),
@@ -819,6 +907,43 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	 * application would strand a paid candidate. The start path is the backstop
 	 * for those.</p>
 	 */
+	/**
+	 * A booking-window bound as it appears in a refusal the candidate reads.
+	 *
+	 * <p>Stated in UTC and labelled as such rather than guessed at in a local
+	 * zone. The server has no reliable way to know the candidate's — the request
+	 * carries an instant, not an offset — and a time printed without a zone is
+	 * read as local, so a bound five and a half hours out would look like the
+	 * server refusing a date that is plainly inside the range it just named. The
+	 * picker shows the same bounds in the browser's own zone; this is the
+	 * backstop, and a backstop has to be unambiguous rather than convenient.</p>
+	 */
+	private static String formatWindowBound(Instant bound) {
+		return WINDOW_BOUND_FORMAT.format(bound);
+	}
+
+	/**
+	 * Why this exam cannot be applied for right now, or null when it can.
+	 *
+	 * <p>Only the booking window, and only the two ways it can rule an exam
+	 * out: it has closed, or it has not opened. Both mean the same thing to a
+	 * candidate about to pay — there is no date they would be allowed to
+	 * pick — and both used to be discovered one step after the money.</p>
+	 */
+	private String evaluateBookingWindowIssue(Exam exam) {
+		Instant now = Instant.now();
+		if (exam.getScheduledEndTime() != null && now.isAfter(exam.getScheduledEndTime())) {
+			return "This exam stopped taking bookings on " + formatWindowBound(exam.getScheduledEndTime())
+					+ ", so a slot cannot be scheduled for it. Contact support before paying —"
+					+ " nothing has been charged.";
+		}
+		if (exam.getScheduledStartTime() != null && now.isBefore(exam.getScheduledStartTime())) {
+			return "This exam opens for booking on " + formatWindowBound(exam.getScheduledStartTime())
+					+ ". Apply from then onwards.";
+		}
+		return null;
+	}
+
 	private String evaluateReScheduleIssue(CertificationApplication application) {
 		ExamSession existingSession = examSessionRepository
 				.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application)

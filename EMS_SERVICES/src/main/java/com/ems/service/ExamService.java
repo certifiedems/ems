@@ -6,6 +6,7 @@ import com.ems.dto.request.ExamDurationUpdateRequest;
 import com.ems.dto.request.ExamPassingMarksUpdateRequest;
 import com.ems.dto.request.ExamScheduleRequest;
 import com.ems.dto.request.ExamUpsertRequest;
+import com.ems.dto.response.ExamBookingWindowResponse;
 import com.ems.dto.response.ExamResponse;
 import com.ems.enums.CertificationLevel;
 import com.ems.enums.ExamStatus;
@@ -28,4 +29,10 @@ public interface ExamService {
 
     List<ExamResponse> search(String examCode, String examName, CertificationLevel certificationLevel,
             ExamStatus examStatus, Boolean published);
+
+    /**
+     * Every exam's booking window, with the number of paid candidates waiting on
+     * it. Backs the admin screen that reopens a window that has run out.
+     */
+    List<ExamBookingWindowResponse> getBookingWindows();
 }

@@ -22,6 +22,7 @@ import com.ems.dto.request.ExamPassingMarksUpdateRequest;
 import com.ems.dto.request.ExamScheduleRequest;
 import com.ems.dto.request.ExamUpsertRequest;
 import com.ems.dto.response.ApiResponse;
+import com.ems.dto.response.ExamBookingWindowResponse;
 import com.ems.dto.response.ExamResponse;
 import com.ems.dto.response.MessageResponse;
 import com.ems.enums.CertificationLevel;
@@ -63,6 +64,15 @@ public class ExamController {
     @PostMapping("/{examId}/publish")
     public ResponseEntity<ApiResponse<ExamResponse>> publish(@PathVariable Long examId) {
         return ok("Exam published successfully", examService.publish(examId));
+    }
+
+    /*
+     * A literal path segment, so it is matched ahead of the "/{examId}" template
+     * and never read as an exam id.
+     */
+    @GetMapping("/booking-windows")
+    public ResponseEntity<ApiResponse<List<ExamBookingWindowResponse>>> bookingWindows() {
+        return ok("Booking windows retrieved successfully", examService.getBookingWindows());
     }
 
     @PostMapping("/{examId}/schedule")

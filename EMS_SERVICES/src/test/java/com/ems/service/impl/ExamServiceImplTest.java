@@ -8,6 +8,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
@@ -21,10 +24,12 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import com.ems.dto.request.ExamUpsertRequest;
+import com.ems.dto.response.ExamBookingWindowResponse;
 import com.ems.dto.response.ExamResponse;
 import com.ems.entity.Exam;
 import com.ems.enums.CertificationLevel;
 import com.ems.exception.BusinessException;
+import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.ExamRepository;
 
 /**
@@ -41,8 +46,64 @@ class ExamServiceImplTest {
     @Mock
     private ExamRepository examRepository;
 
+    @Mock
+    private CertificationApplicationRepository certificationApplicationRepository;
+
     @InjectMocks
     private ExamServiceImpl examService;
+
+    /**
+     * The count beside a closed window has to be the number of people that
+     * window is actually holding up, or an admin cannot tell an urgent exam from
+     * a dormant one.
+     */
+    @Test
+    @DisplayName("booking windows carry the count of candidates waiting on each exam")
+    void bookingWindowsReportWaitingCandidates() {
+        Exam exam = Exam.builder()
+                .id(3L)
+                .examCode("L3-EXPERT-001")
+                .examName("Level 3 Expert Certification Exam")
+                .certificationLevel(CertificationLevel.L3)
+                .published(true)
+                .scheduledStartTime(Instant.now().minus(40, ChronoUnit.DAYS))
+                .scheduledEndTime(Instant.now().minus(2, ChronoUnit.DAYS))
+                .build();
+
+        when(examRepository.findAll()).thenReturn(List.of(exam));
+        when(certificationApplicationRepository.countSchedulableApplicationsByExam(any()))
+                .thenReturn(List.<Object[]>of(new Object[] { 3L, 7L, 2L }));
+
+        List<ExamBookingWindowResponse> windows = examService.getBookingWindows();
+
+        assertThat(windows).hasSize(1);
+        assertThat(windows.get(0).examCode()).isEqualTo("L3-EXPERT-001");
+        assertThat(windows.get(0).waitingApplications()).isEqualTo(7L);
+        assertThat(windows.get(0).bookedApplications()).isEqualTo(2L);
+        assertThat(windows.get(0).bookingClosesAt()).isEqualTo(exam.getScheduledEndTime());
+    }
+
+    /** An exam nobody is waiting on reports zero, not a gap. */
+    @Test
+    @DisplayName("an exam absent from the aggregate reports no one waiting")
+    void bookingWindowsDefaultToZero() {
+        Exam exam = Exam.builder()
+                .id(1L)
+                .examCode("L1-FOUND-001")
+                .examName("Level 1 Foundation Certification Exam")
+                .certificationLevel(CertificationLevel.L1)
+                .published(true)
+                .build();
+
+        when(examRepository.findAll()).thenReturn(List.of(exam));
+        when(certificationApplicationRepository.countSchedulableApplicationsByExam(any()))
+                .thenReturn(List.<Object[]>of());
+
+        List<ExamBookingWindowResponse> windows = examService.getBookingWindows();
+
+        assertThat(windows.get(0).waitingApplications()).isZero();
+        assertThat(windows.get(0).bookedApplications()).isZero();
+    }
 
     private static ExamUpsertRequest request(Integer totalQuestions, String low, String medium, String high) {
         return new ExamUpsertRequest(

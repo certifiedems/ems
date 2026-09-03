@@ -1,6 +1,7 @@
 import axios from 'axios'
 import store from '../store/store'
 import { setToken, logout } from '../store/slices/authSlice'
+import { isOutageError, readMaintenancePayload, reportServerHealth } from './serverHealth'
 
 // In local dev, keep requests relative so Vite proxy forwards to :8080 and
 // prevents browser-side CORS errors.
@@ -11,6 +12,10 @@ const isLocalDev = import.meta.env.DEV && !import.meta.env.PROD
 // ==> Available at your primary URL https://ems-1ze5.onrender.com
 const API_BASE_URL = 'https://ems-1ze5.onrender.com'
 // const API_BASE_URL = 'http://localhost:8080'
+
+// Exported so the liveness probe in systemAPI can address the same host without
+// going through this client's auth interceptors.
+export { API_BASE_URL }
 
 // Without this, axios' default is 0 (no timeout): a request against a dead
 // network can hang indefinitely instead of rejecting, which leaves any
@@ -58,10 +63,26 @@ const isSessionEndpoint = (url = '') => SESSION_ENDPOINTS.some((path) => url.inc
 
 // Response interceptor to handle token refresh
 apiClient.interceptors.response.use(
-	(response) => response,
+	(response) => {
+		// Every answered request is evidence the service is alive. This is what
+		// clears a maintenance screen raised by a false alarm without waiting for
+		// the next scheduled probe.
+		reportServerHealth({ reachable: true })
+		return response
+	},
 	async (error) => {
 		const originalRequest = error.config
 		const state = store.getState()
+
+		// Report before the refresh logic below, not after: that branch can await
+		// a network call of its own, and an outage the user is staring at should
+		// not wait on it to reach the screen.
+		const maintenance = readMaintenancePayload(error)
+		if (maintenance) {
+			reportServerHealth({ reachable: false, maintenance: true, detail: maintenance })
+		} else if (isOutageError(error)) {
+			reportServerHealth({ reachable: false, maintenance: false })
+		}
 
 		if (
 			error.response?.status === 401 &&

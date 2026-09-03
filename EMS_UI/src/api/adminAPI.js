@@ -45,6 +45,11 @@ export const adminAPI = {
 
 	scheduleExam: (examId, data) => apiClient.post(`/exams/${examId}/schedule`, data),
 
+	// Every exam's booking window plus how many paid candidates are waiting on
+	// it. Separate from getAllExams because the counts are an aggregate over
+	// every application, which the exam list has no use for.
+	getBookingWindows: () => apiClient.get('/exams/booking-windows'),
+
 	// ----- Question management (/api/questions) -----
 	getAllQuestions: (params) => apiClient.get('/questions', { params }),
 

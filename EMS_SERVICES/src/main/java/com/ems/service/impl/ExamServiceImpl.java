@@ -4,11 +4,13 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -17,6 +19,7 @@ import com.ems.dto.request.ExamDurationUpdateRequest;
 import com.ems.dto.request.ExamPassingMarksUpdateRequest;
 import com.ems.dto.request.ExamScheduleRequest;
 import com.ems.dto.request.ExamUpsertRequest;
+import com.ems.dto.response.ExamBookingWindowResponse;
 import com.ems.dto.response.ExamResponse;
 import com.ems.entity.Exam;
 import com.ems.enums.CertificationLevel;
@@ -24,9 +27,11 @@ import com.ems.enums.ExamStatus;
 import com.ems.enums.QuestionSeverity;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
+import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.ExamRepository;
 import com.ems.service.ExamService;
 import com.ems.util.ExamQuestionBlueprint;
+import com.ems.util.ExamStartWindow;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +44,7 @@ import lombok.extern.slf4j.Slf4j;
 public class ExamServiceImpl implements ExamService {
 
 	private final ExamRepository examRepository;
+	private final CertificationApplicationRepository certificationApplicationRepository;
 
 	@Override
 	public ExamResponse create(ExamUpsertRequest request) {
@@ -113,6 +119,14 @@ public class ExamServiceImpl implements ExamService {
 	}
 
 	@Override
+	/*
+	 * The candidate's dashboard carries this window, and it is cached for two
+	 * minutes. Without the eviction an admin reopens a window, tells the
+	 * candidate it is done, and the candidate reloads onto a screen still saying
+	 * booking is closed — the support call ends with both of them believing the
+	 * fix did not work.
+	 */
+	@CacheEvict(cacheNames = "dashboard", allEntries = true)
 	public ExamResponse schedule(Long examId, ExamScheduleRequest request) {
 		Exam exam = findExam(examId);
 		if (!request.scheduledEndTime().isAfter(request.scheduledStartTime())) {
@@ -153,6 +167,48 @@ public class ExamServiceImpl implements ExamService {
 		return examRepository.search(examCodePattern, examNamePattern, certificationLevel, examStatus, published).stream()
 				.map(this::toResponse)
 				.toList();
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public List<ExamBookingWindowResponse> getBookingWindows() {
+		/*
+		 * One aggregate for every exam rather than a count per row. The admin
+		 * screen shows all exams at once, and a query per exam would make the
+		 * page cost grow with the catalogue for a number that is the same shape
+		 * every time.
+		 */
+		Instant missedBefore = Instant.now().minus(ExamStartWindow.GRACE);
+		Map<Long, long[]> countsByExam = new HashMap<>();
+		for (Object[] row : certificationApplicationRepository.countSchedulableApplicationsByExam(missedBefore)) {
+			countsByExam.put(
+					(Long) row[0],
+					new long[] { toCount(row[1]), toCount(row[2]) });
+		}
+
+		return examRepository.findAll().stream()
+				.map(exam -> {
+					// Absent from the aggregate means nobody is waiting on this
+					// exam, which is a zero rather than something missing.
+					long[] counts = countsByExam.getOrDefault(exam.getId(), new long[] { 0L, 0L });
+					return new ExamBookingWindowResponse(
+							exam.getId(),
+							exam.getExamCode(),
+							exam.getExamName(),
+							exam.getCertificationLevel(),
+							exam.getExamStatus(),
+							exam.isPublished(),
+							exam.getScheduledStartTime(),
+							exam.getScheduledEndTime(),
+							counts[0],
+							counts[1]);
+				})
+				.toList();
+	}
+
+	/** SUM() comes back as whatever the dialect picked; only the value matters. */
+	private static long toCount(Object value) {
+		return value instanceof Number number ? number.longValue() : 0L;
 	}
 
 	private String toLikePattern(String value) {

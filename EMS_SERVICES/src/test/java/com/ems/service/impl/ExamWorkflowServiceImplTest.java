@@ -24,9 +24,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import com.ems.dto.request.ExamProgressSaveRequest;
+import com.ems.dto.request.ExamWorkflowApplicationRequest;
+import com.ems.dto.request.PaymentInitiationRequest;
 import com.ems.dto.request.ExamStartRequest;
 import com.ems.dto.request.QuestionAnswerSubmissionRequest;
 import com.ems.dto.request.WorkflowExamScheduleRequest;
+import com.ems.dto.response.CertificationEligibilityResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamStartResponse;
 import com.ems.dto.response.ExamWorkflowApplicationResponse;
@@ -538,6 +541,203 @@ class ExamWorkflowServiceImplTest {
 
 		assertThat(ex.getMessage()).contains("already passed");
 		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * The refusal a candidate meets once the exam itself has stopped taking
+	 * bookings must say so.
+	 *
+	 * <p>This is the case that had them stuck: every date they tried came back
+	 * "cannot be later than the exam window end", which reads as a fault in the
+	 * date, so they tried a different one and met the same wall. The window
+	 * being shut is a fact about the exam, not about their pick, and the message
+	 * has to name the day it shut and where to go next.</p>
+	 */
+	@Test
+	void scheduleExam_whenBookingWindowHasClosed_saysSoInsteadOfBlamingThePick() {
+		CertificationApplication application = startableApplication();
+		Instant closedOn = Instant.now().minus(2, ChronoUnit.DAYS);
+		application.getExam().setScheduledStartTime(closedOn.minus(30, ChronoUnit.DAYS));
+		application.getExam().setScheduledEndTime(closedOn);
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.scheduleExam(
+						EMAIL,
+						30L,
+						new WorkflowExamScheduleRequest(Instant.now().plus(1, ChronoUnit.HOURS))));
+
+		assertThat(ex.getMessage()).contains("closed on");
+		assertThat(ex.getMessage()).doesNotContain("cannot be later");
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * A window that is still open but does not reach the chosen date names the
+	 * bound, so the candidate can pick again without guessing.
+	 */
+	@Test
+	void scheduleExam_whenPickFallsOutsideAnOpenBookingWindow_namesTheBound() {
+		CertificationApplication application = startableApplication();
+		application.getExam().setScheduledStartTime(Instant.now().minus(1, ChronoUnit.DAYS));
+		application.getExam().setScheduledEndTime(Instant.now().plus(3, ChronoUnit.DAYS));
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.scheduleExam(
+						EMAIL,
+						30L,
+						new WorkflowExamScheduleRequest(Instant.now().plus(10, ChronoUnit.DAYS))));
+
+		assertThat(ex.getMessage()).contains("can only be booked up to");
+		assertThat(ex.getMessage()).contains("UTC");
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * The bounds travel back with the booking, so the picker can offer only the
+	 * dates the server would accept rather than learning them by refusal.
+	 */
+	@Test
+	void scheduleExam_returnsTheBookingWindowAlongsideTheSlot() {
+		CertificationApplication application = startableApplication();
+		Instant opensAt = Instant.now().minus(1, ChronoUnit.DAYS);
+		Instant closesAt = Instant.now().plus(20, ChronoUnit.DAYS);
+		application.getExam().setScheduledStartTime(opensAt);
+		application.getExam().setScheduledEndTime(closesAt);
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+		when(certificationApplicationRepository.save(any(CertificationApplication.class)))
+				.thenAnswer(call -> call.getArgument(0));
+
+		ExamWorkflowApplicationResponse response = examWorkflowService.scheduleExam(
+				EMAIL, 30L, new WorkflowExamScheduleRequest(Instant.now().plus(2, ChronoUnit.DAYS)));
+
+		assertThat(response.bookingOpensAt()).isEqualTo(opensAt);
+		assertThat(response.bookingClosesAt()).isEqualTo(closesAt);
+	}
+
+	/**
+	 * The dead end that costs money, closed at the door.
+	 *
+	 * <p>A candidate could apply for an exam whose booking window had already
+	 * run out, pay for it, and only then reach scheduling to find no date was
+	 * acceptable — holding a paid application that could never be used. The
+	 * window is now a precondition of applying, not a surprise at the far end.</p>
+	 */
+	@Test
+	void createApplication_whenBookingWindowHasClosed_isRefusedBeforeAnythingIsCharged() {
+		User user = User.builder().id(10L).email(EMAIL).build();
+		Exam exam = Exam.builder()
+				.id(20L)
+				.examCode("EX-L1")
+				.certificationLevel(CertificationLevel.L1)
+				.published(true)
+				.scheduledStartTime(Instant.now().minus(40, ChronoUnit.DAYS))
+				.scheduledEndTime(Instant.now().minus(2, ChronoUnit.DAYS))
+				.build();
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(user));
+		when(certificationJourneyService.getEligibility(EMAIL, CertificationLevel.L1))
+				.thenReturn(new CertificationEligibilityResponse(CertificationLevel.L1, true, "ok", null, null));
+		when(examRepository.findById(20L)).thenReturn(Optional.of(exam));
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.createApplication(
+						EMAIL,
+						new ExamWorkflowApplicationRequest(CertificationLevel.L1, 20L, null)));
+
+		assertThat(ex.getMessage()).contains("stopped taking bookings");
+		assertThat(ex.getMessage()).contains("nothing has been charged");
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * Re-applying is followed straight away by a second payment, so the same
+	 * check has to stand in front of it.
+	 */
+	@Test
+	void reApply_whenBookingWindowHasClosed_isRefusedBeforeASecondPayment() {
+		User user = User.builder().id(10L).email(EMAIL).build();
+		Exam exam = Exam.builder()
+				.id(20L)
+				.examCode("EX-L1")
+				.certificationLevel(CertificationLevel.L1)
+				.published(true)
+				.examStatus(ExamStatus.SCHEDULED)
+				.scheduledStartTime(Instant.now().minus(40, ChronoUnit.DAYS))
+				.scheduledEndTime(Instant.now().minus(2, ChronoUnit.DAYS))
+				.build();
+		CertificationApplication failed = CertificationApplication.builder()
+				.id(31L)
+				.user(user)
+				.exam(exam)
+				.certificationLevel(CertificationLevel.L1)
+				.applicationStatus(CertificationApplicationStatus.FAILED)
+				.paymentStatus(PaymentStatus.SUCCESS)
+				.build();
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(user));
+		when(certificationApplicationRepository.findByIdAndUserWithExam(31L, user))
+				.thenReturn(Optional.of(failed));
+		when(certificationJourneyService.getEligibility(EMAIL, CertificationLevel.L1))
+				.thenReturn(new CertificationEligibilityResponse(CertificationLevel.L1, true, "ok", null, null));
+		when(certificationApplicationRepository
+				.existsByUserAndCertificationLevelAndApplicationStatusIn(any(), any(), any()))
+				.thenReturn(false);
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.reApply(EMAIL, 31L));
+
+		assertThat(ex.getMessage()).contains("stopped taking bookings");
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * The last place money could be taken for a sitting that can never happen.
+	 *
+	 * <p>Applying checks the window, but an application made while it was open
+	 * can be paid for after it has shut — a tab left open overnight is enough.
+	 * Refused at initiation rather than at completion: turning someone away
+	 * after the gateway has charged them is the one outcome worse than letting
+	 * it through.</p>
+	 */
+	@Test
+	void initiatePayment_whenBookingWindowClosedSinceApplying_isRefusedBeforeTheGateway() {
+		CertificationApplication application = startableApplication();
+		application.setPaymentStatus(PaymentStatus.PENDING);
+		application.getExam().setScheduledStartTime(Instant.now().minus(40, ChronoUnit.DAYS));
+		application.getExam().setScheduledEndTime(Instant.now().minus(1, ChronoUnit.DAYS));
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.initiatePayment(
+						EMAIL, 30L, new PaymentInitiationRequest("MOCK", "INR")));
+
+		assertThat(ex.getMessage()).contains("stopped taking bookings");
+		verifyNoInteractions(paymentService);
 	}
 
 	/** Enough questions at every severity for one full paper. */

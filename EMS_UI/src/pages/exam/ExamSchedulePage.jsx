@@ -530,6 +530,18 @@ const ExamSchedulePage = () => {
   // next edit reaching for `window.scrollTo` would break in a way that reads
   // like a React problem.
   const [startWindow, setStartWindow] = useState({ start: null, end: null })
+  /**
+   * The stretch of calendar time in which this exam takes bookings at all.
+   *
+   * Not the same thing as `startWindow`, and the two are easy to confuse: that
+   * one is the ten minutes either side of a slot already booked, this one is
+   * the exam's own window and so bounds every slot that could be picked.
+   *
+   * Held because without it the picker can only offer every date as bookable
+   * and let the candidate find the edge by being refused — which, once the
+   * window has closed altogether, means being refused for every date they try.
+   */
+  const [bookingWindow, setBookingWindow] = useState({ opensAt: null, closesAt: null })
   /** True while the picker is open to change a slot that is already booked. */
   const [rescheduling, setRescheduling] = useState(false)
   const [rescheduled, setRescheduled] = useState(false)
@@ -565,6 +577,18 @@ const ExamSchedulePage = () => {
         if (mounted && app?.scheduledExamTime) {
           setBookedSlot(app.scheduledExamTime)
           setStartWindow({ start: app.examWindowStart, end: app.examWindowEnd })
+        }
+        /*
+         * Read whether or not a slot is booked. A candidate who has paid but
+         * never booked is the one most exposed to a window that has since
+         * closed: they arrive on an empty picker with nothing to tell them that
+         * none of the dates in it can be confirmed.
+         */
+        if (mounted && app) {
+          setBookingWindow({
+            opensAt: app.bookingOpensAt ?? null,
+            closesAt: app.bookingClosesAt ?? null
+          })
         }
       } catch (err) {
         // Scheduling must stay usable even when the syllabus cannot be resolved.
@@ -643,40 +667,69 @@ const ExamSchedulePage = () => {
   const missed = closesAt !== null && now > closesAt
   const windowOpen = Boolean(bookedSlot) && !tooEarly && !missed
 
-  /** The day the picker is currently on, or null while it is empty. */
-  const pickedDateKey = scheduledTime ? scheduledTime.slice(0, 10) : null
+  const bookingOpensAt = bookingWindow.opensAt ? new Date(bookingWindow.opensAt).getTime() : null
+  const bookingClosesAt = bookingWindow.closesAt ? new Date(bookingWindow.closesAt).getTime() : null
+  /*
+   * The exam has stopped taking bookings altogether. Nothing the candidate
+   * could pick would be accepted, so every path that leads to the picker has to
+   * stop leading there — an unbounded response, or one from an older server
+   * that does not send these, leaves this false and the screen exactly as it
+   * was.
+   */
+  const bookingClosed = bookingClosesAt !== null && now > bookingClosesAt
+  /** The exam is not taking bookings yet — rare, but the picker must say so. */
+  const bookingNotOpenYet = bookingOpensAt !== null && now < bookingOpensAt
+  /** The bounds as the picker wants them: local wall-clock, not ISO. */
+  const pickerMin = toLocalInputValue(bookingWindow.opensAt) || undefined
+  const pickerMax = toLocalInputValue(bookingWindow.closesAt) || undefined
+
   /** The time the picker is currently on, so a matching quick pick lights up. */
   const pickedTime = scheduledTime ? scheduledTime.slice(11, 16) : null
-
-  /*
-   * A quick pick that would land in the past is offered but refused, rather
-   * than hidden: a morning grid that empties out as the day goes on reads as
-   * the slot being taken by someone else, which is not what has happened.
-   * `now` ticks every second, so an hour lapses out on its own.
-   */
-  const isSlotPast = (time) =>
-    Boolean(pickedDateKey) && new Date(`${pickedDateKey}T${time}`).getTime() < now
+  /** The day the picker is currently on, or null while it is empty. */
+  const pickedDateKey = scheduledTime ? scheduledTime.slice(0, 10) : null
 
   /**
-   * Moves the picker onto a preferred hour, keeping the day already chosen.
+   * The day a quick pick would land on.
    *
-   * With no day chosen yet the click has to invent one, and it takes today only
-   * while that hour is still ahead — offering "9:00 AM" at four in the
-   * afternoon and filling in a time the Confirm button then rejects is worse
-   * than simply meaning tomorrow.
+   * The day already chosen, or — with the picker still empty — the click has to
+   * invent one, and it takes today only while that hour is still ahead.
+   * Offering "9:00 AM" at four in the afternoon and filling in a time the
+   * Confirm button then rejects is worse than simply meaning tomorrow.
    */
-  const applyPreferredSlot = (time) => {
-    setError('')
+  const dayForSlot = (time) => {
     if (pickedDateKey) {
-      setScheduledTime(`${pickedDateKey}T${time}`)
-      return
+      return pickedDateKey
     }
     const today = toLocalDateKey(new Date())
     const stillAhead = new Date(`${today}T${time}`).getTime() > Date.now()
-    const day = stillAhead
-      ? today
-      : toLocalDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000))
-    setScheduledTime(`${day}T${time}`)
+    return stillAhead ? today : toLocalDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000))
+  }
+
+  /*
+   * A quick pick the server would refuse is offered but disabled, rather than
+   * hidden: a morning grid that empties out as the day goes on reads as the
+   * slot being taken by someone else, which is not what has happened. `now`
+   * ticks every second, so an hour lapses out on its own.
+   *
+   * Judged against the day the click would actually use, not only the one
+   * already chosen — otherwise, with the picker still empty, all six read as
+   * available and the one that gets invented can land outside the window.
+   */
+  const isSlotUnavailable = (time) => {
+    const at = new Date(`${dayForSlot(time)}T${time}`).getTime()
+    if (!Number.isFinite(at) || at < now) {
+      return true
+    }
+    if (bookingOpensAt !== null && at < bookingOpensAt) {
+      return true
+    }
+    return bookingClosesAt !== null && at > bookingClosesAt
+  }
+
+  /** Moves the picker onto a preferred hour. */
+  const applyPreferredSlot = (time) => {
+    setError('')
+    setScheduledTime(`${dayForSlot(time)}T${time}`)
   }
 
   const handleSchedule = async () => {
@@ -690,6 +743,28 @@ const ExamSchedulePage = () => {
       setError('That time has already passed. Please pick a later date and time.')
       return
     }
+    /*
+     * The same three rules the server applies, checked here so the answer comes
+     * back in the candidate's own timezone and without a round trip. The server
+     * stays the authority — this only saves them from learning the bound by
+     * being refused.
+     */
+    if (bookingClosed) {
+      setError(`This exam stopped taking bookings on ${formatSlot(bookingWindow.closesAt)}. `
+        + 'Contact support to have the window reopened — your payment stays on this application.')
+      return
+    }
+    const pickedAt = new Date(scheduledTime).getTime()
+    if (bookingOpensAt !== null && pickedAt < bookingOpensAt) {
+      setError(`This exam opens for booking on ${formatSlot(bookingWindow.opensAt)}. `
+        + 'Pick a time from then onwards.')
+      return
+    }
+    if (bookingClosesAt !== null && pickedAt > bookingClosesAt) {
+      setError(`This exam can only be booked up to ${formatSlot(bookingWindow.closesAt)}. `
+        + 'Pick an earlier time.')
+      return
+    }
     setSaving(true)
     setError('')
     try {
@@ -699,6 +774,15 @@ const ExamSchedulePage = () => {
       setRescheduled(rescheduling)
       setBookedSlot(booking?.scheduledExamTime || isoTime)
       setStartWindow({ start: booking?.examWindowStart, end: booking?.examWindowEnd })
+      // Only when the response actually carries them. A server that does not
+      // send these must leave what the dashboard gave us standing, rather than
+      // have the booking that just succeeded blank out the bounds.
+      if (booking && 'bookingClosesAt' in booking) {
+        setBookingWindow({
+          opensAt: booking.bookingOpensAt ?? null,
+          closesAt: booking.bookingClosesAt ?? null
+        })
+      }
       setRescheduling(false)
       // A confirmed booking always lands on the policy step. Dropping someone
       // straight onto a Start button they last saw three screens ago is how a
@@ -712,6 +796,12 @@ const ExamSchedulePage = () => {
   }
 
   const openReschedule = () => {
+    // Guarded as well as hidden. Nothing on screen offers this once the window
+    // has closed, but a stale click landing here would open a picker in which
+    // every date is refused, which is the loop this whole path exists to end.
+    if (bookingClosed) {
+      return
+    }
     setError('')
     setRescheduled(false)
     setScheduledTime(toLocalInputValue(bookedSlot))
@@ -724,15 +814,28 @@ const ExamSchedulePage = () => {
   }
 
   // The picker shows for a first booking and for a change to an existing one;
-  // everything else is the confirmation panel.
-  const showPicker = !bookedSlot || rescheduling
+  // everything else is the confirmation panel. Never once the exam has stopped
+  // taking bookings — a picker with no confirmable date in it is worse than no
+  // picker, because it looks like the candidate is one more try away.
+  const showPicker = (!bookedSlot || rescheduling) && !bookingClosed
+  /*
+   * The dead end, shown in place of the picker: paid for, nothing booked, and
+   * no window left to book into. It is the only state on this screen the
+   * candidate cannot act their way out of, so it is also the only one that has
+   * to say who can.
+   */
+  const showBookingClosed = !showPicker && bookingClosed && !bookedSlot
   /*
    * A missed slot skips the pre-flight entirely. There is no exam left to
    * prepare for, and making someone tick through a policy and a device check to
    * reach the one button that helps them — rebook — reads as the product not
    * having noticed their slot is gone.
+   *
+   * A booking that is still ahead keeps its pre-flight even with the window
+   * closed behind it: the exam refusing new bookings is not the same as this
+   * one being void, and the server will still start it.
    */
-  const showWizard = !showPicker && !missed
+  const showWizard = !showPicker && !showBookingClosed && !missed
   const blockedChecks = readiness
     ? readinessRows.filter((row) => readiness[row.key]?.state === 'BLOCKED')
     : []
@@ -824,10 +927,34 @@ const ExamSchedulePage = () => {
                     </Alert>
                   )}
 
+                  {/*
+                    * An opening date already in the past is left unsaid. It is
+                    * true, but it is not a bound the candidate can hit — the
+                    * picker will not offer a past date anyway — and naming a day
+                    * last month beside the one that matters buries it.
+                    */}
+                  {(bookingNotOpenYet || bookingWindow.closesAt) && (
+                    <Alert severity="info" icon={<EventAvailableIcon fontSize="inherit" />} sx={{ mt: 2 }}>
+                      This exam takes bookings
+                      {bookingNotOpenYet && <> from <strong>{formatSlot(bookingWindow.opensAt)}</strong></>}
+                      {bookingWindow.closesAt && <> up to <strong>{formatSlot(bookingWindow.closesAt)}</strong></>}.
+                      Dates outside that range cannot be picked.
+                    </Alert>
+                  )}
+
+                  {/*
+                    * The bounds go to the field, not just to the sentence above
+                    * it. A range stated in prose beside a calendar that still
+                    * opens on every date is a rule the candidate has to enforce
+                    * themselves, and the one who does not is the one who ends up
+                    * reading a refusal.
+                    */}
                   <PcbDateField
                     type="datetime-local"
                     fullWidth
                     disablePast
+                    min={pickerMin}
+                    max={pickerMax}
                     label="Exam date and time"
                     value={scheduledTime}
                     onChange={setScheduledTime}
@@ -859,13 +986,13 @@ const ExamSchedulePage = () => {
                   >
                     {preferredSlots.map((slot) => {
                       const selected = pickedTime === slot.time
-                      const past = isSlotPast(slot.time)
+                      const unavailable = isSlotUnavailable(slot.time)
                       return (
                         <Box
                           key={slot.time}
                           component="button"
                           type="button"
-                          disabled={past}
+                          disabled={unavailable}
                           onClick={() => applyPreferredSlot(slot.time)}
                           sx={{
                             height: 40,
@@ -873,7 +1000,7 @@ const ExamSchedulePage = () => {
                             fontFamily: fonts.mono,
                             fontSize: 12,
                             fontWeight: 600,
-                            cursor: past ? 'not-allowed' : 'pointer',
+                            cursor: unavailable ? 'not-allowed' : 'pointer',
                             transition: 'background .15s, border-color .15s, color .15s',
                             ...(selected
                               ? {
@@ -886,7 +1013,7 @@ const ExamSchedulePage = () => {
                                 border: `1.5px solid ${tokens.line2}`,
                                 color: '#93AC9E'
                               }),
-                            ...(past && {
+                            ...(unavailable && {
                               // Struck through rather than merely dimmed: a faded
                               // button beside five identical ones reads as the
                               // one that is selected, not the one that has gone.
@@ -997,8 +1124,51 @@ const ExamSchedulePage = () => {
             </Grid>
           )}
 
+          {/* ---------- exam no longer takes bookings ---------- */}
+          {!levelLoading && showBookingClosed && (
+            <Paper
+              sx={{
+                ...panelSx,
+                p: { xs: 3, md: 4 },
+                maxWidth: 760,
+                mx: 'auto',
+                textAlign: 'center',
+                background: 'linear-gradient(140deg, rgba(220,38,38,.12), rgba(26,6,6,.9))',
+                borderColor: 'rgba(224,101,101,.35)'
+              }}
+            >
+              <Box
+                sx={{
+                  display: 'inline-grid',
+                  placeItems: 'center',
+                  width: 56,
+                  height: 56,
+                  borderRadius: '50%',
+                  mb: 2,
+                  background: 'rgba(224,101,101,.14)',
+                  border: '1.5px solid rgba(224,101,101,.5)',
+                  color: '#E06565'
+                }}
+              >
+                <LockClockIcon sx={{ fontSize: 28 }} />
+              </Box>
+              <Typography sx={{ fontSize: 20, fontWeight: 800, mb: 1 }}>Booking window closed</Typography>
+              <Typography sx={{ fontSize: 13, color: '#93AC9E', mb: 3 }}>
+                {level ? `The ${level} exam` : 'This exam'} stopped taking bookings on{' '}
+                <strong style={{ color: '#CFE2D8' }}>{formatSlot(bookingWindow.closesAt)}</strong>, so
+                application #{applicationId} cannot be scheduled. Contact support to have the window
+                reopened — your payment stays on this application and no new payment is needed.
+              </Typography>
+              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="center">
+                <Button variant="outlined" size="large" onClick={() => navigate('/exams')}>
+                  Back to applications
+                </Button>
+              </Stack>
+            </Paper>
+          )}
+
           {/* ---------- slot gone ---------- */}
-          {!levelLoading && !showPicker && missed && (
+          {!levelLoading && !showPicker && !showBookingClosed && missed && (
             <Paper
               sx={{
                 ...panelSx,
@@ -1029,16 +1199,28 @@ const ExamSchedulePage = () => {
               <Typography sx={{ fontSize: 13, color: '#93AC9E', mb: 3 }}>
                 Application #{applicationId} was booked for <strong style={{ color: '#CFE2D8' }}>{formatSlot(bookedSlot)}</strong>
                 {closesAt !== null && <> and that window closed at {formatExamClock(startWindow.end)}</>}.
-                Pick a new time — your payment still stands.
+                {/*
+                  * Two different pieces of news, and only one of them is
+                  * actionable. Telling someone to "pick a new time" when the exam
+                  * has no times left is the sentence that sent them round the
+                  * picker again, so it is only said when it is true.
+                  */}
+                {bookingClosed
+                  ? <> This exam then stopped taking bookings on <strong style={{ color: '#CFE2D8' }}>{formatSlot(bookingWindow.closesAt)}</strong>,
+                    so there is no later slot to move to. Contact support to have the window
+                    reopened — your payment stays on this application.</>
+                  : <> Pick a new time — your payment still stands.</>}
               </Typography>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="center">
-                <Button
-                  variant="contained" color="warning" size="large"
-                  startIcon={<EditCalendarIcon />}
-                  onClick={openReschedule}
-                >
-                  Pick a new time
-                </Button>
+                {!bookingClosed && (
+                  <Button
+                    variant="contained" color="warning" size="large"
+                    startIcon={<EditCalendarIcon />}
+                    onClick={openReschedule}
+                  >
+                    Pick a new time
+                  </Button>
+                )}
                 <Button variant="text" onClick={() => navigate('/exams')}>
                   Back to applications
                 </Button>
@@ -1465,16 +1647,22 @@ const ExamSchedulePage = () => {
                         * The payment covers one sitting, not one date, and the server
                         * refuses the change the moment a session exists — so nothing
                         * here can be used to buy a second attempt.
+                        *
+                        * The one thing that closes it early is the exam running out
+                        * of window. The booking already made still starts; there is
+                        * simply nowhere left to move it to.
                         */}
-                      <Button
-                        variant="outlined"
-                        size="large"
-                        startIcon={<EditCalendarIcon />}
-                        onClick={openReschedule}
-                        sx={{ flex: 'none' }}
-                      >
-                        Reschedule
-                      </Button>
+                      {!bookingClosed && (
+                        <Button
+                          variant="outlined"
+                          size="large"
+                          startIcon={<EditCalendarIcon />}
+                          onClick={openReschedule}
+                          sx={{ flex: 'none' }}
+                        >
+                          Reschedule
+                        </Button>
+                      )}
                       <Button
                         variant="contained" size="large" fullWidth
                         // A play triangle means "go". Beside "Not open yet" it invites

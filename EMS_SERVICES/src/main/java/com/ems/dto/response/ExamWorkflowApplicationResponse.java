@@ -31,6 +31,23 @@ public record ExamWorkflowApplicationResponse(
         Instant examWindowStart,
         Instant examWindowEnd,
 
+        /**
+         * The stretch of calendar time in which a slot may be booked at all.
+         *
+         * <p>Not the same thing as {@code examWindowStart/End} above, and the
+         * two are easy to confuse: those describe the few minutes around a
+         * booking that already exists, this describes the exam's own window and
+         * so bounds every booking that could be made. Null when the application
+         * carries no exam, or when the exam leaves that bound open.</p>
+         *
+         * <p>Sent because a client that cannot see this bound has no choice but
+         * to offer every date as bookable and let the candidate find the edge by
+         * being refused — which is exactly how a candidate whose exam window has
+         * closed ends up retrying dates forever.</p>
+         */
+        Instant bookingOpensAt,
+        Instant bookingClosesAt,
+
         String remarks,
         boolean canReApply,
         boolean restartRequired,

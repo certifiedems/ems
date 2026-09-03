@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux'
 import { ThemeProvider, CssBaseline } from '@mui/material'
 import theme from './theme'
 import LayoutWrapper from './components/layout/LayoutWrapper'
+import ServerStatusGate from './components/system/ServerStatusGate'
 import { ProfilePhotoProvider } from './contexts/ProfilePhotoContext'
 
 // Auth pages
@@ -33,6 +34,7 @@ import CertificationJourneyPage from './pages/certification/CertificationJourney
 import AdminDashboardPage from './pages/admin/AdminDashboardPage'
 import AdminUsersPage from './pages/admin/AdminUsersPage'
 import AdminExamsPage from './pages/admin/AdminExamsPage'
+import AdminBookingWindowsPage from './pages/admin/AdminBookingWindowsPage'
 import AdminQuestionsPage from './pages/admin/AdminQuestionsPage'
 import AdminViolationsPage from './pages/admin/AdminViolationsPage'
 import AdminPaymentsPage from './pages/admin/AdminPaymentsPage'
@@ -62,80 +64,90 @@ function App() {
         * rather than moving any route.
         */}
       <Router future={{ v7_relativeSplatPath: true }}>
-        <Routes>
-          {/*
-            * Home — the sign-in screen. Signed-out visitors land here; signed-in
-            * ones are forwarded straight to their dashboard.
-            *
-            * Declared as an index route rather than path="/" deliberately: the
-            * protected tree below hangs off a `/*` splat, and a plain path="/"
-            * loses the ranking contest against that splat, which silently
-            * swallows the home screen. An index route outranks it.
-            */}
-          <Route
-            index
-            element={isAuthenticated ? <Navigate to={homePath} replace /> : <LoginPage />}
-          />
+        {/*
+          * Inside the Router, and wrapping every route: while the API is
+          * unreachable or deliberately closed for a deploy, this replaces the
+          * whole tree with the maintenance screen and puts it back on its own
+          * once the service answers. It needs the router context to recognise
+          * the one route it must not take over — a live exam.
+          */}
+        <ServerStatusGate>
+          <Routes>
+            {/*
+              * Home — the sign-in screen. Signed-out visitors land here; signed-in
+              * ones are forwarded straight to their dashboard.
+              *
+              * Declared as an index route rather than path="/" deliberately: the
+              * protected tree below hangs off a `/*` splat, and a plain path="/"
+              * loses the ranking contest against that splat, which silently
+              * swallows the home screen. An index route outranks it.
+              */}
+            <Route
+              index
+              element={isAuthenticated ? <Navigate to={homePath} replace /> : <LoginPage />}
+            />
 
-          {/* Public Auth Routes */}
-          <Route
-            path="/login"
-            element={isAuthenticated ? <Navigate to={homePath} replace /> : <LoginPage />}
-          />
-          <Route path="/register" element={<RegisterPage />} />
-          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+            {/* Public Auth Routes */}
+            <Route
+              path="/login"
+              element={isAuthenticated ? <Navigate to={homePath} replace /> : <LoginPage />}
+            />
+            <Route path="/register" element={<RegisterPage />} />
+            <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+            <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
-          {/* Exam route - no drawer/layout during exam */}
-          <Route
-            path="/exam/:applicationId"
-            element={isAuthenticated ? <ExamPage /> : <Navigate to="/" replace />}
-          />
+            {/* Exam route - no drawer/layout during exam */}
+            <Route
+              path="/exam/:applicationId"
+              element={isAuthenticated ? <ExamPage /> : <Navigate to="/" replace />}
+            />
 
-          {/* Protected User Routes */}
-          <Route
-            path="/*"
-            element={
-              isAuthenticated ? (
-                <ProfilePhotoProvider>
-                  <LayoutWrapper />
-                </ProfilePhotoProvider>
+            {/* Protected User Routes */}
+            <Route
+              path="/*"
+              element={
+                isAuthenticated ? (
+                  <ProfilePhotoProvider>
+                    <LayoutWrapper />
+                  </ProfilePhotoProvider>
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            >
+              {isAdmin ? (
+                <>
+                  <Route path="dashboard" element={<Navigate to="/admin/dashboard" replace />} />
+                  <Route path="admin/dashboard" element={<AdminDashboardPage />} />
+                  <Route path="admin/users" element={<AdminUsersPage />} />
+                  <Route path="admin/exams" element={<AdminExamsPage />} />
+                  <Route path="admin/booking-windows" element={<AdminBookingWindowsPage />} />
+                  <Route path="admin/questions" element={<AdminQuestionsPage />} />
+                  <Route path="admin/payments" element={<AdminPaymentsPage />} />
+                  <Route path="admin/violations" element={<AdminViolationsPage />} />
+                  <Route path="admin/exam-reports" element={<ExamReportPageEnhanced />} />
+                  <Route path="admin/reports" element={<ReportPage />} />
+                  <Route path="profile" element={<ProfilePage />} />
+                  <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />
+                </>
               ) : (
-                <Navigate to="/" replace />
-              )
-            }
-          >
-            {isAdmin ? (
-              <>
-                <Route path="dashboard" element={<Navigate to="/admin/dashboard" replace />} />
-                <Route path="admin/dashboard" element={<AdminDashboardPage />} />
-                <Route path="admin/users" element={<AdminUsersPage />} />
-                <Route path="admin/exams" element={<AdminExamsPage />} />
-                <Route path="admin/questions" element={<AdminQuestionsPage />} />
-                <Route path="admin/payments" element={<AdminPaymentsPage />} />
-                <Route path="admin/violations" element={<AdminViolationsPage />} />
-                <Route path="admin/exam-reports" element={<ExamReportPageEnhanced />} />
-                <Route path="admin/reports" element={<ReportPage />} />
-                <Route path="profile" element={<ProfilePage />} />
-                <Route path="*" element={<Navigate to="/admin/dashboard" replace />} />
-              </>
-            ) : (
-              <>
-                <Route path="dashboard" element={<DashboardPage />} />
-                <Route path="profile" element={<ProfilePage />} />
-                <Route path="certifications" element={<CertificationJourneyPage />} />
-                <Route path="exams" element={<ExamApplicationPage />} />
-                <Route path="exam/schedule/:applicationId" element={<ExamSchedulePage />} />
-                <Route path="exam/payment/:applicationId" element={<PaymentPage />} />
-                <Route path="exam/result/:sessionId" element={<ResultPage />} />
-                <Route path="certificates" element={<CertificatePage />} />
-                <Route path="exam-reports" element={<UserExamReportPageEnhanced />} />
-                <Route path="reports" element={<UserReportPage />} />
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
-              </>
-            )}
-          </Route>
-        </Routes>
+                <>
+                  <Route path="dashboard" element={<DashboardPage />} />
+                  <Route path="profile" element={<ProfilePage />} />
+                  <Route path="certifications" element={<CertificationJourneyPage />} />
+                  <Route path="exams" element={<ExamApplicationPage />} />
+                  <Route path="exam/schedule/:applicationId" element={<ExamSchedulePage />} />
+                  <Route path="exam/payment/:applicationId" element={<PaymentPage />} />
+                  <Route path="exam/result/:sessionId" element={<ResultPage />} />
+                  <Route path="certificates" element={<CertificatePage />} />
+                  <Route path="exam-reports" element={<UserExamReportPageEnhanced />} />
+                  <Route path="reports" element={<UserReportPage />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                </>
+              )}
+            </Route>
+          </Routes>
+        </ServerStatusGate>
       </Router>
     </ThemeProvider>
   )
