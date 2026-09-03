@@ -1,9 +1,12 @@
 package com.ems.service.impl;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
@@ -18,10 +21,12 @@ import com.ems.dto.response.ExamResponse;
 import com.ems.entity.Exam;
 import com.ems.enums.CertificationLevel;
 import com.ems.enums.ExamStatus;
+import com.ems.enums.QuestionSeverity;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.ExamRepository;
 import com.ems.service.ExamService;
+import com.ems.util.ExamQuestionBlueprint;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +43,7 @@ public class ExamServiceImpl implements ExamService {
 	@Override
 	public ExamResponse create(ExamUpsertRequest request) {
 		validateRequest(request);
+		ExamQuestionBlueprint blueprint = resolveBlueprint(request);
 		if (examRepository.existsByExamCodeIgnoreCase(request.examCode())) {
 			throw new BusinessException("Exam code already exists", HttpStatus.CONFLICT);
 		}
@@ -49,6 +55,10 @@ public class ExamServiceImpl implements ExamService {
 				.durationMinutes(request.durationMinutes())
 				.totalMarks(request.totalMarks())
 				.passingPercentage(request.passingPercentage())
+				.totalQuestions(blueprint.totalQuestions())
+				.lowSeverityPercentage(blueprint.lowSeverityPercentage())
+				.mediumSeverityPercentage(blueprint.mediumSeverityPercentage())
+				.highSeverityPercentage(blueprint.highSeverityPercentage())
 				.examStatus(ExamStatus.SCHEDULED)
 				.published(false)
 				.build();
@@ -61,6 +71,7 @@ public class ExamServiceImpl implements ExamService {
 	@Override
 	public ExamResponse update(Long examId, ExamUpsertRequest request) {
 		validateRequest(request);
+		ExamQuestionBlueprint blueprint = resolveBlueprint(request);
 
 		Exam existingExam = findExam(examId);
 		examRepository.findByExamCodeIgnoreCase(request.examCode())
@@ -75,6 +86,10 @@ public class ExamServiceImpl implements ExamService {
 		existingExam.setDurationMinutes(request.durationMinutes());
 		existingExam.setTotalMarks(request.totalMarks());
 		existingExam.setPassingPercentage(request.passingPercentage());
+		existingExam.setTotalQuestions(blueprint.totalQuestions());
+		existingExam.setLowSeverityPercentage(blueprint.lowSeverityPercentage());
+		existingExam.setMediumSeverityPercentage(blueprint.mediumSeverityPercentage());
+		existingExam.setHighSeverityPercentage(blueprint.highSeverityPercentage());
 
 		Exam savedExam = examRepository.save(existingExam);
 		log.info("Exam updated: code={}, id={}", savedExam.getExamCode(), savedExam.getId());
@@ -153,14 +168,67 @@ public class ExamServiceImpl implements ExamService {
 	}
 
 	private void validateRequest(ExamUpsertRequest request) {
-		if (request.passingPercentage().compareTo(java.math.BigDecimal.valueOf(100)) > 0) {
+		if (request.passingPercentage().compareTo(BigDecimal.valueOf(100)) > 0) {
 			throw new BusinessException("Passing percentage must not exceed 100");
 		}
+	}
+
+	/**
+	 * The blueprint the request is asking for, or the standard paper when it
+	 * asks for nothing.
+	 *
+	 * <p>The four fields move together: a request that sets some of them and
+	 * leaves the rest out is rejected rather than quietly mixed with defaults,
+	 * because half a mix is not a mix — pairing a caller's 50% LOW with a
+	 * default 40% MEDIUM would build a paper nobody asked for and still pass
+	 * every field-level check.</p>
+	 */
+	private ExamQuestionBlueprint resolveBlueprint(ExamUpsertRequest request) {
+		boolean anySet = request.totalQuestions() != null
+				|| request.lowSeverityPercentage() != null
+				|| request.mediumSeverityPercentage() != null
+				|| request.highSeverityPercentage() != null;
+		if (!anySet) {
+			return ExamQuestionBlueprint.defaults();
+		}
+
+		boolean allSet = request.totalQuestions() != null
+				&& request.lowSeverityPercentage() != null
+				&& request.mediumSeverityPercentage() != null
+				&& request.highSeverityPercentage() != null;
+		if (!allSet) {
+			throw new BusinessException(
+					"Question blueprint is incomplete: set total questions and all three severity percentages together");
+		}
+
+		/*
+		 * Rounded to the two decimals the column holds before anything is
+		 * derived from them. A caller sending 33.333 would otherwise be shown a
+		 * split worked out from 33.333 and get one worked out from the stored
+		 * 33.33 the next time the exam was read back.
+		 */
+		ExamQuestionBlueprint blueprint = new ExamQuestionBlueprint(
+				request.totalQuestions(),
+				request.lowSeverityPercentage().setScale(2, RoundingMode.HALF_UP),
+				request.mediumSeverityPercentage().setScale(2, RoundingMode.HALF_UP),
+				request.highSeverityPercentage().setScale(2, RoundingMode.HALF_UP));
+
+		BigDecimal total = blueprint.percentageTotal();
+		if (total.compareTo(ExamQuestionBlueprint.REQUIRED_PERCENTAGE_TOTAL) != 0) {
+			throw new BusinessException(String.format(
+					"Severity percentages must add up to 100 (low + medium + high = %s)",
+					total.stripTrailingZeros().toPlainString()));
+		}
+
+		return blueprint;
 	}
 
 	private ExamResponse toResponse(Exam exam) {
 		Instant createdAt = exam.getCreatedDate() == null ? null : exam.getCreatedDate().toInstant(ZoneOffset.UTC);
 		Instant updatedAt = exam.getUpdatedDate() == null ? null : exam.getUpdatedDate().toInstant(ZoneOffset.UTC);
+
+		ExamQuestionBlueprint blueprint = ExamQuestionBlueprint.of(exam);
+		Map<QuestionSeverity, Integer> questionCounts = blueprint.questionCounts();
 
 		return new ExamResponse(
 				exam.getId(),
@@ -170,6 +238,13 @@ public class ExamServiceImpl implements ExamService {
 				exam.getDurationMinutes(),
 				exam.getTotalMarks(),
 				exam.getPassingPercentage(),
+				blueprint.totalQuestions(),
+				blueprint.lowSeverityPercentage(),
+				blueprint.mediumSeverityPercentage(),
+				blueprint.highSeverityPercentage(),
+				questionCounts.get(QuestionSeverity.LOW),
+				questionCounts.get(QuestionSeverity.MEDIUM),
+				questionCounts.get(QuestionSeverity.HIGH),
 				exam.getExamStatus(),
 				exam.isPublished(),
 				exam.getScheduledStartTime(),

@@ -5,6 +5,7 @@ import java.time.Instant;
 
 import com.ems.enums.CertificationLevel;
 import com.ems.enums.ExamStatus;
+import com.ems.util.ExamQuestionBlueprint;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -53,6 +54,34 @@ public class Exam extends BaseAuditEntity {
 
     @Column(name = "passing_percentage", nullable = false, precision = 5, scale = 2)
     private BigDecimal passingPercentage;
+
+    /**
+     * How many questions one attempt at this exam draws, and how that total is
+     * shared across the three severities. The mix is held as percentages, not
+     * counts, because it is set that way and stays meaningful when the total
+     * moves; {@link ExamQuestionBlueprint} turns it into whole questions at the
+     * moment a paper is built.
+     *
+     * <p>The columns are NOT NULL, so these default rather than being left
+     * unset: an exam built without a blueprint would otherwise fail on insert
+     * instead of falling back. The values mirror the column DEFAULT clauses and
+     * the paper the server built before the mix was configurable.</p>
+     */
+    @Builder.Default
+    @Column(name = "total_questions", nullable = false)
+    private Integer totalQuestions = ExamQuestionBlueprint.DEFAULT_TOTAL_QUESTIONS;
+
+    @Builder.Default
+    @Column(name = "low_severity_percentage", nullable = false, precision = 5, scale = 2)
+    private BigDecimal lowSeverityPercentage = ExamQuestionBlueprint.DEFAULT_LOW_PERCENTAGE;
+
+    @Builder.Default
+    @Column(name = "medium_severity_percentage", nullable = false, precision = 5, scale = 2)
+    private BigDecimal mediumSeverityPercentage = ExamQuestionBlueprint.DEFAULT_MEDIUM_PERCENTAGE;
+
+    @Builder.Default
+    @Column(name = "high_severity_percentage", nullable = false, precision = 5, scale = 2)
+    private BigDecimal highSeverityPercentage = ExamQuestionBlueprint.DEFAULT_HIGH_PERCENTAGE;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "exam_status", nullable = false, length = 20)

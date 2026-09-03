@@ -31,7 +31,9 @@ import com.ems.enums.ViolationType;
 import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.VideoRecordingRepository;
+import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.ProctorEvidenceStorageService;
 
 @ExtendWith(MockitoExtension.class)
 class ProctoringServiceImplTest {
@@ -54,6 +56,12 @@ class ProctoringServiceImplTest {
 	 * Mockito does not guarantee that one {@code @InjectMocks} field is constructed
 	 * before another that depends on it.
 	 */
+	@Mock
+	private ProctorEvidenceRepository proctorEvidenceRepository;
+
+	@Mock
+	private ProctorEvidenceStorageService proctorEvidenceStorageService;
+
 	private ProctoringServiceImpl proctoringService;
 
 	@BeforeEach
@@ -64,6 +72,8 @@ class ProctoringServiceImplTest {
 				examSessionRepository,
 				videoRecordingRepository,
 				violationRepository,
+				proctorEvidenceRepository,
+				proctorEvidenceStorageService,
 				examInvalidationHandler);
 	}
 

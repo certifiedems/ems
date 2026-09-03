@@ -9,7 +9,7 @@ VALUES
     ('ADMIN', 'Administrator role with platform management privileges', 'SYSTEM', CURRENT_TIMESTAMP, 'SYSTEM', CURRENT_TIMESTAMP),
     ('USER',  'Candidate role for certification lifecycle actions',     'SYSTEM', CURRENT_TIMESTAMP, 'SYSTEM', CURRENT_TIMESTAMP);
 
--- Users  (password_hash = BCrypt of "Admin@123" for admin-001, "User@1234" for user-001)
+-- Users  (admin-001 password reset 2026-09-03 - see deployment secret; user-001 hash unchanged)
 MERGE INTO users (user_id, first_name, last_name, email, mobile_number, password_hash,
                   profile_photo_key, address, years_of_experience, current_skill_level,
                   current_organization, qualification, father_name, enabled, account_non_locked,
@@ -17,7 +17,7 @@ MERGE INTO users (user_id, first_name, last_name, email, mobile_number, password
 KEY(user_id)
 VALUES
     ('admin-001', 'System', 'Admin', 'admin@ems.local', '9000000001',
-     '$2a$10$fdhHOLpOLnaiSlopvd/1PeswC9RZnk0khzBwcimahfdxp5QDLVvy2',
+     '$2a$10$a3Cy.Xr8SIDWeS1vbxwb0uBEEFqsyzAPvWavXF/mzMZxPP1e//DWW',
      NULL, 'Head Office', 10, 'L3', 'EMS', 'M.Tech', 'N/A',
      TRUE, TRUE, 'SYSTEM', CURRENT_TIMESTAMP, 'SYSTEM', CURRENT_TIMESTAMP),
     ('user-001',  'Demo',   'User',  'user@ems.local',  '9000000002',
@@ -71,17 +71,22 @@ DELETE FROM exams;
 
 -- Exams
 MERGE INTO exams (exam_code, exam_name, certification_level, duration_minutes, total_marks,
-                  passing_percentage, exam_status, published, scheduled_start_time, scheduled_end_time,
+                  passing_percentage, total_questions, low_severity_percentage,
+                  medium_severity_percentage, high_severity_percentage,
+                  exam_status, published, scheduled_start_time, scheduled_end_time,
                   created_by, created_date, updated_by, updated_date)
 KEY(exam_code)
 VALUES
     ('L1-FOUND-001', 'Level 1 Foundation Certification Exam', 'L1', 60, 30.00, 60.00,
+     30, 20.00, 40.00, 40.00,
      'SCHEDULED', TRUE, DATEADD('DAY', -1, CURRENT_TIMESTAMP), DATEADD('DAY', 30, CURRENT_TIMESTAMP),
      'SYSTEM', CURRENT_TIMESTAMP, 'SYSTEM', CURRENT_TIMESTAMP),
     ('L2-ADV-001', 'Level 2 Advanced Certification Exam', 'L2', 90, 40.00, 60.00,
+     30, 20.00, 40.00, 40.00,
      'SCHEDULED', TRUE, DATEADD('DAY', -1, CURRENT_TIMESTAMP), DATEADD('DAY', 30, CURRENT_TIMESTAMP),
      'SYSTEM', CURRENT_TIMESTAMP, 'SYSTEM', CURRENT_TIMESTAMP),
     ('L3-EXPERT-001', 'Level 3 Expert Certification Exam', 'L3', 120, 50.00, 65.00,
+     30, 20.00, 40.00, 40.00,
      'SCHEDULED', TRUE, DATEADD('DAY', -1, CURRENT_TIMESTAMP), DATEADD('DAY', 30, CURRENT_TIMESTAMP),
      'SYSTEM', CURRENT_TIMESTAMP, 'SYSTEM', CURRENT_TIMESTAMP);
 

@@ -20,5 +20,11 @@ public record PaymentResponse(
         Instant paymentDate,
         String providerReference,
         String redirectUrl,
-        String qrCodePayload) {
+        String qrCodePayload,
+        // The gateway-side order the browser must pay against, and the
+        // publishable key that opens the gateway's widget. Both are null for
+        // providers with no browser-side checkout, and the secret key is never
+        // part of this record.
+        String providerOrderId,
+        String providerKeyId) {
 }

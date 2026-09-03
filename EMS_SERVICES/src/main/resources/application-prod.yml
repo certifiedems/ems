@@ -52,3 +52,23 @@ app:
       access-key: ${R2_ACCESS_KEY}
       secret-key: ${R2_SECRET_KEY}
       bucket: ${R2_BUCKET:ems-profile-photos}
+      # Proctoring evidence gets its own bucket and its own API token: it is
+      # unbounded-growth personal data that wants a stricter credential and an
+      # independent lifecycle rule, which one shared bucket could not give it.
+      evidence:
+        account-id: ${R2_EVIDENCE_ACCOUNT_ID}
+        access-key: ${R2_EVIDENCE_ACCESS_KEY}
+        secret-key: ${R2_EVIDENCE_SECRET_KEY}
+        bucket: ${R2_EVIDENCE_BUCKET:ems-proctoring-evidence}
+        # Set false to fall back to inline base64 without a redeploy if R2 is
+        # unreachable or the token is revoked.
+        enabled: ${R2_EVIDENCE_ENABLED:true}
+
+  payment:
+    razorpay:
+      # Live keys and the webhook secret come from the environment only. A
+      # secret in this file is a secret in the git history.
+      enabled: ${RAZORPAY_ENABLED:true}
+      key-id: ${RAZORPAY_KEY_ID}
+      key-secret: ${RAZORPAY_KEY_SECRET}
+      webhook-secret: ${RAZORPAY_WEBHOOK_SECRET}

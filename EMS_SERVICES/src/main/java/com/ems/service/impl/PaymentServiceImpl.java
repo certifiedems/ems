@@ -94,6 +94,7 @@ public class PaymentServiceImpl implements PaymentService {
 		}
 
 		PaymentProvider provider = parseProvider(request.provider());
+		requireSettleableProvider(provider);
 		Payment payment = Payment.builder()
 				.transactionId(UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase(Locale.ROOT))
 				.user(application.getUser())
@@ -108,6 +109,7 @@ public class PaymentServiceImpl implements PaymentService {
 		Payment savedPayment = paymentRepository.save(payment);
 		PaymentProviderResult initiation = strategy(provider).initiate(savedPayment);
 		savedPayment.setProviderReference(initiation.providerReference());
+		savedPayment.setProviderOrderId(initiation.providerOrderId());
 		savedPayment.setPaymentStatus(initiation.paymentStatus());
 		Payment persistedPayment = paymentRepository.save(savedPayment);
 
@@ -116,7 +118,7 @@ public class PaymentServiceImpl implements PaymentService {
 
 		log.info("Payment initiated: transactionId={}, provider={}, applicationId={}",
 				persistedPayment.getTransactionId(), provider, applicationId);
-		return toResponse(persistedPayment, initiation.redirectUrl(), initiation.qrCodePayload());
+		return toResponse(persistedPayment, initiation);
 	}
 
 	@Override
@@ -126,11 +128,27 @@ public class PaymentServiceImpl implements PaymentService {
 		Payment payment = paymentRepository.findByTransactionIdAndUser(transactionId, user)
 				.orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
 
+		/*
+		 * A settled payment is final. The browser callback and the gateway
+		 * webhook both land here and either can arrive first, so re-verifying is
+		 * routine -- but a second pass must not be able to reopen a payment that
+		 * already succeeded, which is exactly what a replayed or malformed
+		 * callback would do by reporting failure against a captured charge.
+		 */
+		if (payment.getPaymentStatus() == PaymentStatus.SUCCESS) {
+			log.info("Payment already settled, verification ignored: transactionId={}", transactionId);
+			return toResponse(payment, null);
+		}
+
 		PaymentProvider provider = parseProvider(payment.getProvider());
 		PaymentProviderResult verification = strategy(provider).verify(payment, request);
 		payment.setPaymentStatus(verification.paymentStatus());
 		payment.setProviderReference(verification.providerReference());
-		payment.setPaymentDate(Instant.now());
+		// Stamped only once money has actually moved: a failed or still-pending
+		// attempt has no payment date, and the receipt prints this field.
+		if (verification.paymentStatus() == PaymentStatus.SUCCESS) {
+			payment.setPaymentDate(Instant.now());
+		}
 		Payment savedPayment = paymentRepository.save(payment);
 
 		CertificationApplication application = payment.getCertificationApplication();
@@ -142,7 +160,7 @@ public class PaymentServiceImpl implements PaymentService {
 			certificationApplicationRepository.save(application);
 		}
 
-		return toResponse(savedPayment, verification.redirectUrl(), verification.qrCodePayload());
+		return toResponse(savedPayment, verification);
 	}
 
 	@Override
@@ -167,7 +185,73 @@ public class PaymentServiceImpl implements PaymentService {
 			certificationApplicationRepository.save(application);
 		}
 
-		return toResponse(savedPayment, refund.redirectUrl(), refund.qrCodePayload());
+		return toResponse(savedPayment, refund);
+	}
+
+	@Override
+	@CacheEvict(cacheNames = "dashboard", allEntries = true)
+	public void settleFromGatewayCallback(
+			String providerOrderId,
+			String providerReference,
+			PaymentStatus status,
+			BigDecimal paidAmount,
+			String paidCurrency) {
+		Payment payment = paymentRepository.findByProviderOrderId(providerOrderId).orElse(null);
+		if (payment == null) {
+			// Not an error: one Razorpay account can serve more than this
+			// system, and webhooks are delivered for every order on it.
+			log.warn("Gateway callback for unknown order, ignored: providerOrderId={}", providerOrderId);
+			return;
+		}
+
+		/*
+		 * Only PENDING is open to a callback. A settled payment stays settled --
+		 * gateways retry deliveries for days and the browser callback races them,
+		 * so a webhook must never be able to undo a success or reanimate a
+		 * refund. Refunds are excluded here too: they are recorded by the admin
+		 * refund path, and a late payment.captured for a refunded charge would
+		 * otherwise mark it paid again.
+		 */
+		if (payment.getPaymentStatus() != PaymentStatus.PENDING) {
+			log.info("Gateway callback ignored, payment already {}: transactionId={}",
+					payment.getPaymentStatus(), payment.getTransactionId());
+			return;
+		}
+
+		/*
+		 * Defence in depth. The signature already proves the callback is
+		 * Razorpay's and the order id ties it to a fee we set, so a mismatch here
+		 * should be impossible -- which is exactly why it is worth refusing to
+		 * grant exam access on, rather than trusting that it stays impossible.
+		 */
+		if (status == PaymentStatus.SUCCESS && !billedAmountMatches(payment, paidAmount, paidCurrency)) {
+			log.error("Gateway callback amount mismatch, refusing to settle: transactionId={}, "
+							+ "billed={} {}, callback reported={} {}",
+					payment.getTransactionId(), payment.getAmount(), payment.getCurrency(),
+					paidAmount, paidCurrency);
+			return;
+		}
+
+		payment.setPaymentStatus(status);
+		if (providerReference != null && !providerReference.isBlank()) {
+			payment.setProviderReference(providerReference);
+		}
+		if (status == PaymentStatus.SUCCESS) {
+			payment.setPaymentDate(Instant.now());
+		}
+		Payment savedPayment = paymentRepository.save(payment);
+
+		CertificationApplication application = savedPayment.getCertificationApplication();
+		if (application != null) {
+			application.setPaymentStatus(status);
+			if (status == PaymentStatus.SUCCESS) {
+				application.setApplicationStatus(CertificationApplicationStatus.IN_PROGRESS);
+			}
+			certificationApplicationRepository.save(application);
+		}
+
+		log.info("Payment settled from gateway callback: transactionId={}, status={}, providerReference={}",
+				savedPayment.getTransactionId(), status, providerReference);
 	}
 
 	@Override
@@ -175,7 +259,7 @@ public class PaymentServiceImpl implements PaymentService {
 	public List<PaymentResponse> getPaymentHistory(String email) {
 		User user = findUser(email);
 		return paymentRepository.findByUserOrderByCreatedDateDesc(user).stream()
-				.map(payment -> toResponse(payment, null, null))
+				.map(payment -> toResponse(payment, null))
 				.toList();
 	}
 
@@ -209,6 +293,43 @@ public class PaymentServiceImpl implements PaymentService {
 				new ByteArrayResource(pdf),
 				MediaType.APPLICATION_PDF_VALUE,
 				"receipt-" + payment.getTransactionId() + ".pdf");
+	}
+
+	/**
+	 * Whether a callback describes the charge we actually raised.
+	 *
+	 * <p>A callback that reports no amount at all is accepted: the gateway is
+	 * still the one that said the order was paid, and the order carries our
+	 * amount. Only a stated amount that disagrees is treated as a mismatch.</p>
+	 */
+	private boolean billedAmountMatches(Payment payment, BigDecimal paidAmount, String paidCurrency) {
+		if (paidAmount == null) {
+			return true;
+		}
+		return paidAmount.compareTo(payment.getAmount()) == 0
+				&& (paidCurrency == null || payment.getCurrency().equalsIgnoreCase(paidCurrency));
+	}
+
+	/**
+	 * Refuses a simulated provider once any real one is configured.
+	 *
+	 * <p>The provider list is the candidate's to choose from, and three of the
+	 * four entries settle by simply asserting success. That is harmless while
+	 * every provider is simulated -- the whole system is then a sandbox -- but
+	 * the moment Razorpay is given live credentials, picking "Stripe" instead
+	 * becomes a checkout that grants a paid exam for nothing. So the presence of
+	 * one real gateway retires the pretend ones.</p>
+	 */
+	private void requireSettleableProvider(PaymentProvider provider) {
+		if (!strategy(provider).isSimulated()) {
+			return;
+		}
+		boolean liveGatewayConfigured = providerStrategies.values().stream()
+				.anyMatch(candidate -> !candidate.isSimulated());
+		if (liveGatewayConfigured) {
+			log.warn("Rejected simulated provider while a live gateway is configured: provider={}", provider);
+			throw new BusinessException("This payment method is not available", HttpStatus.BAD_REQUEST);
+		}
 	}
 
 	private PaymentProviderStrategy strategy(PaymentProvider provider) {
@@ -279,7 +400,7 @@ public class PaymentServiceImpl implements PaymentService {
 				: subject + " exam application fee";
 	}
 
-	private PaymentResponse toResponse(Payment payment, String redirectUrl, String qrCodePayload) {
+	private PaymentResponse toResponse(Payment payment, PaymentProviderResult result) {
 		return new PaymentResponse(
 				payment.getId(),
 				payment.getTransactionId(),
@@ -292,7 +413,11 @@ public class PaymentServiceImpl implements PaymentService {
 				payment.getPaymentStatus(),
 				payment.getPaymentDate(),
 				payment.getProviderReference(),
-				redirectUrl,
-				qrCodePayload);
+				result == null ? null : result.redirectUrl(),
+				result == null ? null : result.qrCodePayload(),
+				payment.getProviderOrderId(),
+				// Only ever the publishable key, and only on the call that opens
+				// checkout: history and receipts have no use for it.
+				result == null ? null : result.publicKey());
 	}
 }

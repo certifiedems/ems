@@ -8,10 +8,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -389,6 +391,77 @@ class ExamWorkflowServiceImplTest {
 	}
 
 	/**
+	 * The paper follows the exam's blueprint, not a constant.
+	 *
+	 * <p>This is the whole point of making the mix configurable, and it is the
+	 * one assertion that would still pass if the server quietly kept building
+	 * 30-question papers: the counts here are deliberately nothing like the
+	 * 6/12/12 default.</p>
+	 */
+	@Test
+	void startExam_drawsThePaperTheExamsBlueprintDescribes() {
+		CertificationApplication application = startableApplication();
+		application.getExam().setTotalQuestions(20);
+		application.getExam().setLowSeverityPercentage(new BigDecimal("50.00"));
+		application.getExam().setMediumSeverityPercentage(new BigDecimal("25.00"));
+		application.getExam().setHighSeverityPercentage(new BigDecimal("25.00"));
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+		stubQuestionPool();
+		when(examSessionRepository.save(any(ExamSession.class))).thenAnswer(call -> call.getArgument(0));
+
+		ExamStartResponse response = examWorkflowService.startExam(
+				EMAIL, 30L, new ExamStartRequest(null, Boolean.TRUE, Instant.now()));
+
+		assertThat(response.questionIds()).hasSize(20);
+		assertThat(response.questionCount()).isEqualTo(20);
+
+		/*
+		 * stubQuestionPool numbers each severity's questions from
+		 * severity.ordinal() * 100, so the id a question carries says which pool
+		 * it was drawn from.
+		 */
+		Map<QuestionSeverity, Long> drawnPerSeverity = response.questionIds().stream()
+				.collect(java.util.stream.Collectors.groupingBy(
+						id -> QuestionSeverity.values()[(int) (id / 100)],
+						java.util.stream.Collectors.counting()));
+
+		assertThat(drawnPerSeverity).containsEntry(QuestionSeverity.LOW, 10L)
+				.containsEntry(QuestionSeverity.MEDIUM, 5L)
+				.containsEntry(QuestionSeverity.HIGH, 5L);
+	}
+
+	/** A severity given no share is not drawn from, and its pool is not required. */
+	@Test
+	void startExam_whenASeverityHasNoShare_drawsNoneOfIt() {
+		CertificationApplication application = startableApplication();
+		application.getExam().setTotalQuestions(10);
+		application.getExam().setLowSeverityPercentage(BigDecimal.ZERO);
+		application.getExam().setMediumSeverityPercentage(new BigDecimal("50.00"));
+		application.getExam().setHighSeverityPercentage(new BigDecimal("50.00"));
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+		stubQuestionPool(QuestionSeverity.MEDIUM, QuestionSeverity.HIGH);
+		when(examSessionRepository.save(any(ExamSession.class))).thenAnswer(call -> call.getArgument(0));
+
+		ExamStartResponse response = examWorkflowService.startExam(
+				EMAIL, 30L, new ExamStartRequest(null, Boolean.TRUE, Instant.now()));
+
+		assertThat(response.questionIds()).hasSize(10);
+		assertThat(response.questionIds()).noneMatch(id -> id < 100);
+		verify(questionRepository, never()).findByCertificationLevelAndSeverityInAndActiveTrue(
+				CertificationLevel.L1, List.of(QuestionSeverity.LOW));
+	}
+
+	/**
 	 * The window governs when an attempt may begin, not how long it may run. A
 	 * candidate who started on time and lost their connection is rejoining the
 	 * sitting they already paid for, however far past the slot the reconnection
@@ -469,7 +542,18 @@ class ExamWorkflowServiceImplTest {
 
 	/** Enough questions at every severity for one full paper. */
 	private void stubQuestionPool() {
-		for (QuestionSeverity severity : QuestionSeverity.values()) {
+		stubQuestionPool(QuestionSeverity.values());
+	}
+
+	/**
+	 * Enough questions at the named severities, and none stubbed at the others.
+	 *
+	 * <p>Strict stubbing then does half the asserting: a paper that draws from a
+	 * severity it was not given a share of fails on the missing stub rather than
+	 * quietly passing.</p>
+	 */
+	private void stubQuestionPool(QuestionSeverity... severities) {
+		for (QuestionSeverity severity : severities) {
 			List<Question> pool = new ArrayList<>();
 			for (int i = 0; i < 12; i++) {
 				pool.add(Question.builder()

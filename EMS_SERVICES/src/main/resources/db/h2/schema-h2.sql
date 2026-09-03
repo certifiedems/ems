@@ -110,6 +110,10 @@ CREATE TABLE IF NOT EXISTS exams (
     duration_minutes    INT            NOT NULL,
     total_marks         DECIMAL(10, 2) NOT NULL,
     passing_percentage  DECIMAL(5, 2)  NOT NULL,
+    total_questions     INT            NOT NULL DEFAULT 30,
+    low_severity_percentage    DECIMAL(5, 2) NOT NULL DEFAULT 20.00,
+    medium_severity_percentage DECIMAL(5, 2) NOT NULL DEFAULT 40.00,
+    high_severity_percentage   DECIMAL(5, 2) NOT NULL DEFAULT 40.00,
     exam_status         VARCHAR(20)    NOT NULL,
     published           BOOLEAN        NOT NULL,
     scheduled_start_time TIMESTAMP,
@@ -122,7 +126,13 @@ CREATE TABLE IF NOT EXISTS exams (
     CONSTRAINT chk_exam_status           CHECK (exam_status IN ('SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'PASSED', 'FAILED', 'INVALIDATED')),
     CONSTRAINT chk_exam_duration         CHECK (duration_minutes > 0),
     CONSTRAINT chk_exam_total_marks      CHECK (total_marks >= 0),
-    CONSTRAINT chk_exam_passing_percentage CHECK (passing_percentage >= 0 AND passing_percentage <= 100)
+    CONSTRAINT chk_exam_passing_percentage CHECK (passing_percentage >= 0 AND passing_percentage <= 100),
+    CONSTRAINT chk_exam_total_questions   CHECK (total_questions > 0),
+    CONSTRAINT chk_exam_severity_percentages CHECK (low_severity_percentage >= 0 AND low_severity_percentage <= 100
+                                                AND medium_severity_percentage >= 0 AND medium_severity_percentage <= 100
+                                                AND high_severity_percentage >= 0 AND high_severity_percentage <= 100),
+    CONSTRAINT chk_exam_severity_mix_total CHECK (low_severity_percentage + medium_severity_percentage
+                                                  + high_severity_percentage = 100)
 );
 
 CREATE TABLE IF NOT EXISTS certification_applications (
@@ -180,6 +190,7 @@ CREATE TABLE IF NOT EXISTS payments (
     payment_status              VARCHAR(20)     NOT NULL,
     payment_date                TIMESTAMP,
     provider_reference          VARCHAR(100),
+    provider_order_id           VARCHAR(100),
     created_by                  VARCHAR(100)    NOT NULL,
     created_date                TIMESTAMP       NOT NULL,
     updated_by                  VARCHAR(100),
@@ -329,7 +340,22 @@ ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS marked_for_review_json CLOB;
 ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS last_question_number   INT;
 ALTER TABLE exam_sessions ADD COLUMN IF NOT EXISTS progress_saved_at      TIMESTAMP;
 
+-- The question blueprint (V26 on Postgres). Defaults reproduce the 30-question
+-- 6/12/12 paper the server built before the mix was the admin's to set, so an
+-- existing database's exams keep behaving as they did until someone edits them.
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS total_questions            INT           DEFAULT 30 NOT NULL;
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS low_severity_percentage    DECIMAL(5, 2) DEFAULT 20.00 NOT NULL;
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS medium_severity_percentage DECIMAL(5, 2) DEFAULT 40.00 NOT NULL;
+ALTER TABLE exams ADD COLUMN IF NOT EXISTS high_severity_percentage   DECIMAL(5, 2) DEFAULT 40.00 NOT NULL;
+
+-- The gateway order id (V27 on Postgres). An H2 database created before this
+-- existed still has the old payments table, and CREATE TABLE IF NOT EXISTS above
+-- will not add the column to it -- so initiating a Razorpay payment would fail
+-- on the very insert that opens the order.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_order_id VARCHAR(100);
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_payments_provider_order_id ON payments (provider_order_id);
 CREATE INDEX IF NOT EXISTS idx_users_email          ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_mobile_number  ON users (mobile_number);
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_revoked         ON refresh_tokens (user_ref, revoked);

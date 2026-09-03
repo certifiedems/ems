@@ -3,6 +3,7 @@ package com.ems.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -20,6 +21,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.http.HttpStatus;
 
 import com.ems.dto.request.ViolationRequestDTO;
 import com.ems.dto.response.ViolationLogResponse;
@@ -40,6 +42,7 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.ProctorEvidenceStorageService;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -61,6 +64,9 @@ class ViolationStrikeRecorderTest {
 	@Mock
 	private CertificationApplicationRepository certificationApplicationRepository;
 
+	@Mock
+	private ProctorEvidenceStorageService proctorEvidenceStorageService;
+
 	private ViolationStrikeRecorder recorder;
 
 	private User user;
@@ -75,6 +81,7 @@ class ViolationStrikeRecorderTest {
 				examSessionRepository,
 				violationRepository,
 				proctorEvidenceRepository,
+				proctorEvidenceStorageService,
 				new ExamInvalidationHandler(certificationApplicationRepository));
 
 		when(violationRepository.save(any(Violation.class))).thenAnswer(invocation -> {
@@ -384,5 +391,62 @@ class ViolationStrikeRecorderTest {
 		assertThat(response.strikeCount()).isEqualTo(1);
 		assertThat(response.evidenceStored()).isFalse();
 		verify(proctorEvidenceRepository, never()).save(any(ProctorEvidence.class));
+	}
+
+	@Test
+	void record_offloadsTheFrameToObjectStorageWhenTheBackendIsEnabled() {
+		session(0, ExamStatus.IN_PROGRESS);
+		byte[] rawBytes = "fake-jpeg-bytes".getBytes(StandardCharsets.UTF_8);
+		String base64 = Base64.getEncoder().encodeToString(rawBytes);
+
+		when(proctorEvidenceStorageService.isObjectStorageEnabled()).thenReturn(true);
+		when(proctorEvidenceStorageService.storeEvidence(
+				any(byte[].class), any(String.class), any(Long.class), any(Long.class)))
+				.thenReturn("sessions/300/900-abc.jpg");
+
+		ViolationLogResponse response = recorder.record(
+				CALLER_EMAIL, request(ViolationType.PHONE_DETECTED, "data:image/jpeg;base64," + base64));
+
+		ArgumentCaptor<byte[]> bytesCaptor = ArgumentCaptor.forClass(byte[].class);
+		verify(proctorEvidenceStorageService).storeEvidence(
+				bytesCaptor.capture(), eq("image/jpeg"), eq(300L), eq(900L));
+		assertThat(bytesCaptor.getValue()).isEqualTo(rawBytes);
+
+		ArgumentCaptor<ProctorEvidence> captor = ArgumentCaptor.forClass(ProctorEvidence.class);
+		verify(proctorEvidenceRepository).save(captor.capture());
+		ProctorEvidence saved = captor.getValue();
+
+		assertThat(saved.getStorageKind()).isEqualTo(EvidenceStorageKind.OBJECT_STORAGE);
+		assertThat(saved.getObjectStorageKey()).isEqualTo("sessions/300/900-abc.jpg");
+		// The whole point: the database row no longer carries the bytes.
+		assertThat(saved.getEvidencePayload()).isNull();
+		assertThat(saved.getPayloadBytes()).isEqualTo(rawBytes.length);
+		assertThat(response.evidenceStored()).isTrue();
+	}
+
+	@Test
+	void record_fallsBackToInlineStorageWhenTheUploadFails() {
+		session(0, ExamStatus.IN_PROGRESS);
+		byte[] rawBytes = "fake-jpeg-bytes".getBytes(StandardCharsets.UTF_8);
+		String base64 = Base64.getEncoder().encodeToString(rawBytes);
+
+		when(proctorEvidenceStorageService.isObjectStorageEnabled()).thenReturn(true);
+		when(proctorEvidenceStorageService.storeEvidence(
+				any(byte[].class), any(String.class), any(Long.class), any(Long.class)))
+				.thenThrow(new BusinessException("R2 unreachable", HttpStatus.INTERNAL_SERVER_ERROR));
+
+		ViolationLogResponse response = recorder.record(
+				CALLER_EMAIL, request(ViolationType.PHONE_DETECTED, "data:image/jpeg;base64," + base64));
+
+		ArgumentCaptor<ProctorEvidence> captor = ArgumentCaptor.forClass(ProctorEvidence.class);
+		verify(proctorEvidenceRepository).save(captor.capture());
+		ProctorEvidence saved = captor.getValue();
+
+		assertThat(saved.getStorageKind()).isEqualTo(EvidenceStorageKind.INLINE_BASE64);
+		assertThat(saved.getEvidencePayload()).isEqualTo(base64);
+		assertThat(saved.getObjectStorageKey()).isNull();
+		// A bucket outage must not cost the candidate their strike record.
+		assertThat(response.strikeCount()).isEqualTo(1);
+		assertThat(response.evidenceStored()).isTrue();
 	}
 }

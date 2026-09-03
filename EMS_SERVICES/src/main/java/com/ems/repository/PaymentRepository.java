@@ -18,6 +18,15 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
 
     Optional<Payment> findByTransactionIdAndUser(String transactionId, User user);
 
+    /**
+     * Looks a payment up the way a gateway callback identifies it.
+     *
+     * <p>Webhooks know the gateway's order id, not our transaction id, and they
+     * arrive unauthenticated by any user session -- so this lookup is deliberately
+     * not scoped to a {@link User}.</p>
+     */
+    Optional<Payment> findByProviderOrderId(String providerOrderId);
+
     boolean existsByCertificationApplicationIdAndPaymentStatus(Long certificationApplicationId, PaymentStatus paymentStatus);
 
     List<Payment> findByUserOrderByCreatedDateDesc(User user);

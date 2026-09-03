@@ -70,4 +70,16 @@ public class Payment extends BaseAuditEntity {
 
     @Column(name = "provider_reference", length = 100)
     private String providerReference;
+
+    /**
+     * The gateway-side order this payment is being made against, where the
+     * gateway has such a concept (Razorpay does; a QR payload does not).
+     *
+     * <p>Kept separate from {@link #providerReference} because the two are
+     * different identifiers with different lifetimes: the order exists from
+     * initiation, the payment id only once the payer has actually paid, and
+     * signature verification needs both at once.</p>
+     */
+    @Column(name = "provider_order_id", length = 100)
+    private String providerOrderId;
 }

@@ -38,7 +38,7 @@ import com.ems.security.RestAuthenticationEntryPoint;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@EnableConfigurationProperties(JwtProperties.class)
+@EnableConfigurationProperties({ JwtProperties.class, RazorpayProperties.class })
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
@@ -90,6 +90,9 @@ public class SecurityConfig {
                                 "/api/auth/reset-password",
                                 "/api/users/register",
                                 "/api/certificates/verify/**",
+                                // Razorpay holds no JWT; the endpoint authenticates
+                                // the caller by HMAC over the raw body instead.
+                                "/api/payments/webhooks/**",
                                 "/h2-console/**",
                                 "/v3/api-docs/**",
                                 "/swagger-ui/**",

@@ -113,3 +113,13 @@ app:
       max-size-bytes: ${PROFILE_PHOTO_MAX_SIZE_BYTES:5242880}
       max-width: ${PROFILE_PHOTO_MAX_WIDTH:4096}
       max-height: ${PROFILE_PHOTO_MAX_HEIGHT:4096}
+  payment:
+    razorpay:
+      # Off by default so a checkout without credentials keeps the simulated
+      # flow instead of failing: local development and the workflow tests both
+      # run the full application journey with no gateway account.
+      enabled: ${RAZORPAY_ENABLED:false}
+      key-id: ${RAZORPAY_KEY_ID:}
+      key-secret: ${RAZORPAY_KEY_SECRET:}
+      webhook-secret: ${RAZORPAY_WEBHOOK_SECRET:}
+      api-base-url: ${RAZORPAY_API_BASE_URL:https://api.razorpay.com/v1}

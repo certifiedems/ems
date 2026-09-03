@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import com.ems.dto.response.ProctorEvidenceResponse;
 import com.ems.entity.ExamSession;
 import com.ems.entity.ProctorEvidence;
 import com.ems.entity.Violation;
@@ -27,13 +28,14 @@ public interface ProctorEvidenceRepository extends JpaRepository<ProctorEvidence
      * megabytes of base64 out of the database.
      */
     @Query("""
-            SELECT e.id, e.violation.id, e.storageKind, e.mediaType,
-                   e.payloadBytes, e.frameWidth, e.frameHeight, e.capturedAt
+            SELECT new com.ems.dto.response.ProctorEvidenceResponse(
+                       e.id, e.violation.id, e.storageKind, e.mediaType,
+                       e.payloadBytes, e.frameWidth, e.frameHeight, e.capturedAt)
             FROM ProctorEvidence e
             WHERE e.examSession.id = :sessionId
             ORDER BY e.capturedAt DESC
             """)
-    List<Object[]> findEvidenceMetadataBySession(@Param("sessionId") Long sessionId);
+    List<ProctorEvidenceResponse> findEvidenceMetadataBySession(@Param("sessionId") Long sessionId);
 
     /** Total bytes of evidence retained for a session, used for retention/quota checks. */
     @Query("SELECT COALESCE(SUM(e.payloadBytes), 0) FROM ProctorEvidence e WHERE e.examSession.id = :sessionId")

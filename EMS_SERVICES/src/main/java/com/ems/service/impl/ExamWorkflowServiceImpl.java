@@ -58,6 +58,7 @@ import com.ems.repository.UserRepository;
 import com.ems.service.CertificationJourneyService;
 import com.ems.service.ExamWorkflowService;
 import com.ems.service.PaymentService;
+import com.ems.util.ExamQuestionBlueprint;
 import com.ems.util.ExamStartWindow;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -73,12 +74,8 @@ import lombok.extern.slf4j.Slf4j;
 @Transactional
 public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 
-	private static final int TOTAL_QUESTIONS = 30;
 	/** Fallback when an exam carries no duration; matches the client's old default. */
 	private static final int DEFAULT_EXAM_DURATION_MINUTES = 60;
-	private static final int COUNT_LOW = 6;
-	private static final int COUNT_MEDIUM = 12;
-	private static final int COUNT_HIGH = 12;
 	private static final String VIOLATION_RESTART_MESSAGE = "Exam was terminated after 3 violations. Re-apply and complete payment to restart from question 1.";
 
 	private static final TypeReference<List<Long>> LONG_LIST_TYPE = new TypeReference<>() {
@@ -195,10 +192,18 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				.findFirst()
 				.orElseThrow(() -> new ResourceNotFoundException("Payment not found for application"));
 
+		// Forwarded whole: the gateway handshake is what settles the payment, and
+		// dropping it here would leave verification with nothing but the
+		// browser's own claim of success.
 		return paymentService.verifyPayment(
 				email,
 				latestPayment.transactionId(),
-				new PaymentVerificationRequest(request.success(), request.providerReference()));
+				new PaymentVerificationRequest(
+						request.success(),
+						request.providerReference(),
+						request.razorpayOrderId(),
+						request.razorpayPaymentId(),
+						request.razorpaySignature()));
 	}
 
 	@Override
@@ -298,7 +303,8 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 			throw new BusinessException(windowIssue, HttpStatus.BAD_REQUEST);
 		}
 
-		List<Question> selectedQuestions = buildProportionalQuestionSet(application.getCertificationLevel());
+		List<Question> selectedQuestions = buildProportionalQuestionSet(
+				application.getExam(), application.getCertificationLevel());
 		Collections.shuffle(selectedQuestions);
 
 		List<Long> selectedIds = selectedQuestions.stream().map(Question::getId).toList();
@@ -317,7 +323,7 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 		ExamQuestionPayloadResponse firstQuestion = toQuestionPayload(selectedQuestions.get(0));
 
 		log.info("Exam started applicationId={} sessionToken={} questionCount={}",
-				applicationId, savedSession.getSessionToken(), TOTAL_QUESTIONS);
+				applicationId, savedSession.getSessionToken(), selectedIds.size());
 
 		return new ExamStartResponse(
 				application.getId(),
@@ -327,7 +333,7 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				savedSession.getSessionToken(),
 				savedSession.getId(),
 				savedSession.getSessionStartTime(),
-				TOTAL_QUESTIONS,
+				selectedIds.size(),
 				selectedIds,
 				firstQuestion,
 				examDurationSeconds(application),
@@ -760,19 +766,27 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 		}
 	}
 
-	private List<Question> buildProportionalQuestionSet(CertificationLevel level) {
-		List<Question> low = pickSeverity(level, QuestionSeverity.LOW, COUNT_LOW);
-		List<Question> medium = pickSeverity(level, QuestionSeverity.MEDIUM, COUNT_MEDIUM);
-		List<Question> high = pickSeverity(level, QuestionSeverity.HIGH, COUNT_HIGH);
+	/**
+	 * Draws one paper to the blueprint the admin set on this exam: its question
+	 * total, split across the severities in the proportions it carries. An exam
+	 * that carries no blueprint — one created before it was configurable — draws
+	 * the standard 30-question paper, so no attempt is left without questions.
+	 */
+	private List<Question> buildProportionalQuestionSet(Exam exam, CertificationLevel level) {
+		ExamQuestionBlueprint blueprint = ExamQuestionBlueprint.of(exam);
+		Map<QuestionSeverity, Integer> counts = blueprint.questionCounts();
 
-		List<Question> combined = new ArrayList<>(TOTAL_QUESTIONS);
-		combined.addAll(low);
-		combined.addAll(medium);
-		combined.addAll(high);
+		List<Question> combined = new ArrayList<>(blueprint.totalQuestions());
+		for (QuestionSeverity severity : QuestionSeverity.values()) {
+			combined.addAll(pickSeverity(level, severity, counts.get(severity)));
+		}
 		return combined;
 	}
 
 	private List<Question> pickSeverity(CertificationLevel level, QuestionSeverity severity, int count) {
+		if (count <= 0) {
+			return new ArrayList<>();
+		}
 		List<Question> pool = new ArrayList<>(
 				questionRepository.findByCertificationLevelAndSeverityInAndActiveTrue(level, List.of(severity)));
 		if (pool.size() < count) {

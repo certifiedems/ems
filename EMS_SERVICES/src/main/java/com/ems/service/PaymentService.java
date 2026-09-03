@@ -1,11 +1,13 @@
 package com.ems.service;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 import com.ems.dto.request.PaymentInitiationRequest;
 import com.ems.dto.request.PaymentRefundRequest;
 import com.ems.dto.request.PaymentVerificationRequest;
 import com.ems.dto.response.PaymentResponse;
+import com.ems.enums.PaymentStatus;
 
 public interface PaymentService {
 
@@ -14,6 +16,27 @@ public interface PaymentService {
     PaymentResponse verifyPayment(String email, String transactionId, PaymentVerificationRequest request);
 
     PaymentResponse refundPayment(String transactionId, PaymentRefundRequest request);
+
+    /**
+     * Settles a payment from an out-of-band gateway callback.
+     *
+     * <p>Identified by the gateway's own order id because a webhook has no user
+     * session and does not know our transaction id. This is the authoritative
+     * path: the browser callback is a convenience that lets the candidate move
+     * on immediately, but a closed tab, a dropped connection or a payment that
+     * captures late all leave the webhook as the only thing that will ever
+     * report the outcome.</p>
+     *
+     * <p>Idempotent. Gateways retry, and the browser callback races it, so being
+     * called twice for one payment is the normal case rather than the
+     * exceptional one.</p>
+     */
+    void settleFromGatewayCallback(
+            String providerOrderId,
+            String providerReference,
+            PaymentStatus status,
+            BigDecimal paidAmount,
+            String paidCurrency);
 
     List<PaymentResponse> getPaymentHistory(String email);
 

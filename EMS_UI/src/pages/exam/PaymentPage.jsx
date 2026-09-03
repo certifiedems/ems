@@ -3,10 +3,12 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Box, Paper, Grid, Typography, Button, Alert, Stack, Checkbox, FormControlLabel,
-  Link, ToggleButtonGroup, ToggleButton, Divider, CircularProgress
+  Link, Divider, CircularProgress
 } from '@mui/material'
+import { useSelector } from 'react-redux'
 import { examAPI } from '../../api/examAPI'
 import { userAPI } from '../../api/userAPI'
+import { loadRazorpayCheckout, openRazorpayCheckout } from '../../utils/razorpay'
 import PageHeader from '../../components/common/PageHeader'
 import PaymentTermsDialog from '../../components/payment/PaymentTermsDialog'
 import { tokens, fonts, ctaButton } from '../../styles/tokens'
@@ -14,12 +16,18 @@ import CreditCardIcon from '@mui/icons-material/CreditCardRounded'
 import CheckCircleIcon from '@mui/icons-material/CheckCircleRounded'
 import ShieldRoundedIcon from '@mui/icons-material/ShieldRounded'
 
-const PROVIDERS = [
-  { value: 'RAZORPAY', label: 'RazorPay' },
-  { value: 'STRIPE', label: 'Stripe' },
-  { value: 'PAYPAL', label: 'PayPal' },
-  { value: 'UPI_QR', label: 'UPI (QR)' }
-]
+/*
+ * Razorpay is the only gateway wired to real money, so it is the only one
+ * offered. The four-way chooser this replaced was picking between one gateway
+ * and three simulations that settled by asserting success -- a choice that
+ * looked like a payment preference and was actually a choice of whether to pay.
+ *
+ * Nothing is lost by removing it: the methods below are what Razorpay presents
+ * inside its own checkout, so the candidate still picks how they pay. They are
+ * listed here only so the page says so before the modal opens.
+ */
+const PROVIDER = 'RAZORPAY'
+const PAYMENT_METHODS = ['UPI', 'Cards', 'Net banking', 'Wallets']
 
 const LEVEL_AMOUNT = {
   L1: 999,
@@ -30,7 +38,7 @@ const LEVEL_AMOUNT = {
 const PaymentPage = () => {
   const navigate = useNavigate()
   const { applicationId } = useParams()
-  const [provider, setProvider] = useState('RAZORPAY')
+  const { user } = useSelector((state) => state.auth)
   const [currency] = useState('INR')
   const [processing, setProcessing] = useState(false)
   const [error, setError] = useState('')
@@ -88,20 +96,81 @@ const PaymentPage = () => {
 
   const amount = LEVEL_AMOUNT[applicationLevel] || LEVEL_AMOUNT.L1
 
+  const settle = async (payload) => {
+    const res = await examAPI.completePayment(applicationId, payload)
+    if (res.data.data?.paymentStatus !== 'SUCCESS') {
+      /*
+       * The server verified the gateway handshake and did not accept it. An
+       * authorised-but-uncaptured payment lands here too, which is why the
+       * wording points at the webhook rather than claiming a failure: the money
+       * may well arrive, just not in time for this page.
+       */
+      throw new Error(
+        'We could not confirm this payment yet. If you were charged, it will be reconciled shortly — please check your payment history before paying again.'
+      )
+    }
+    setDone(true)
+    setTimeout(() => navigate(`/exam/schedule/${applicationId}`), 1200)
+  }
+
   const handlePay = async () => {
     setProcessing(true)
     setError('')
     try {
-      // 1. Initiate the payment to obtain a transaction reference.
-      const initRes = await examAPI.initiatePayment(applicationId, { provider, currency })
-      const providerReference = initRes.data.data?.transactionId || `TXN-${Date.now()}`
+      // 1. Ask the server to open a payment. For a live gateway this creates the
+      //    order that Checkout will be paid against; the amount and the order are
+      //    both decided server-side so neither can be edited on the way through.
+      const initRes = await examAPI.initiatePayment(applicationId, { provider: PROVIDER, currency })
+      const initiated = initRes.data.data || {}
 
-      // 2. Complete the payment (mock gateway success).
-      await examAPI.completePayment(applicationId, { success: true, providerReference })
-      setDone(true)
-      setTimeout(() => navigate(`/exam/schedule/${applicationId}`), 1200)
+      // 2. A publishable key and an order id mean a real gateway is configured.
+      //    Without them the backend is running its simulated provider, and the
+      //    old straight-through completion is still the correct flow.
+      if (!initiated.providerKeyId || !initiated.providerOrderId) {
+        await settle({
+          success: true,
+          providerReference: initiated.transactionId || `TXN-${Date.now()}`,
+        })
+        return
+      }
+
+      if (!(await loadRazorpayCheckout())) {
+        throw new Error('Could not reach the payment gateway. Check your connection and try again.')
+      }
+
+      // 3. Hand the payer to Razorpay. Card details go to Razorpay's frame, not
+      //    to this origin.
+      const result = await openRazorpayCheckout({
+        keyId: initiated.providerKeyId,
+        orderId: initiated.providerOrderId,
+        amount: initiated.amount ?? amount,
+        currency: initiated.currency || currency,
+        name: 'Certified EMS Engineer',
+        description: initiated.description || `${applicationLevel} certification exam fee`,
+        prefill: {
+          name: [user?.firstName, user?.lastName].filter(Boolean).join(' '),
+          email: user?.email || '',
+        },
+        notes: { applicationId: String(applicationId) },
+      })
+
+      if (result.cancelled) {
+        // Nothing was charged and nothing needs saying — the order stays open
+        // and the same button will reopen Checkout.
+        return
+      }
+
+      // 4. The browser's word is not proof. The three fields below are what the
+      //    server re-signs and checks against Razorpay before granting access.
+      await settle({
+        success: true,
+        providerReference: result.razorpay_payment_id,
+        razorpayOrderId: result.razorpay_order_id,
+        razorpayPaymentId: result.razorpay_payment_id,
+        razorpaySignature: result.razorpay_signature,
+      })
     } catch (err) {
-      const message = err.response?.data?.message || 'Payment failed. Please try again.'
+      const message = err.response?.data?.message || err.message || 'Payment failed. Please try again.'
       if (err.response?.status === 409 && message.includes('already completed')) {
         navigate(`/exam/schedule/${applicationId}`, { replace: true })
         return
@@ -152,53 +221,49 @@ const PaymentPage = () => {
             ) : (
               <>
                 <Typography variant="h6" fontWeight={700} gutterBottom>
-                  Choose a payment provider
+                  Payment method
                 </Typography>
                 {error && <Alert severity="error" sx={{ my: 2 }}>{error}</Alert>}
 
                 {/*
-                  * Laid out as a grid rather than the usual joined bar: four
-                  * providers welded together read as one segmented control with
-                  * a default, and the choice here is the candidate's to make.
-                  * The doubled class outranks the group's own corner-stripping
-                  * rules, which would otherwise square off the inner tiles.
+                  * Read-only chips, not a control: the candidate chooses among
+                  * these inside Razorpay's own window a moment from now. Shown
+                  * here so the page answers "how can I pay?" before committing
+                  * them to a modal.
                   */}
-                <ToggleButtonGroup
-                  exclusive
-                  value={provider}
-                  onChange={(_, v) => v && setProvider(v)}
-                  sx={{
-                    my: 2,
-                    display: 'grid',
-                    gridTemplateColumns: { xs: 'repeat(2, minmax(0, 1fr))', sm: 'repeat(4, minmax(0, 1fr))' },
-                    gap: 1,
-                    '& .MuiToggleButtonGroup-grouped.MuiToggleButton-root': {
-                      m: 0,
-                      height: 40,
-                      px: 1,
-                      border: `1.5px solid ${tokens.line2}`,
-                      borderRadius: '9px',
-                      fontFamily: fonts.mono,
-                      fontSize: 11,
-                      fontWeight: 700,
-                      letterSpacing: '.5px',
-                      textTransform: 'none',
-                      color: tokens.body,
-                      '&.Mui-selected': {
-                        background: 'rgba(192,138,46,.18)',
-                        borderColor: 'rgba(192,138,46,.4)',
-                        color: tokens.copperLt,
-                        '&:hover': { background: 'rgba(192,138,46,.24)' },
-                      },
-                    },
-                  }}
+                <Stack
+                  direction="row"
+                  flexWrap="wrap"
+                  useFlexGap
+                  spacing={1}
+                  sx={{ my: 2 }}
                 >
-                  {PROVIDERS.map((p) => (
-                    <ToggleButton key={p.value} value={p.value}>
-                      {p.label}
-                    </ToggleButton>
+                  {PAYMENT_METHODS.map((method) => (
+                    <Box
+                      key={method}
+                      sx={{
+                        height: 32,
+                        px: 1.4,
+                        display: 'flex',
+                        alignItems: 'center',
+                        border: `1.5px solid ${tokens.line2}`,
+                        borderRadius: '9px',
+                        fontFamily: fonts.mono,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        letterSpacing: '.5px',
+                        color: tokens.body,
+                      }}
+                    >
+                      {method}
+                    </Box>
                   ))}
-                </ToggleButtonGroup>
+                </Stack>
+
+                <Typography sx={{ fontSize: 12, color: tokens.muted }}>
+                  Processed by Razorpay. Your card details are entered on
+                  Razorpay's secure window and are never sent to this site.
+                </Typography>
 
                 <Divider sx={{ my: 2 }} />
 

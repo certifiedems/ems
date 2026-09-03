@@ -5,6 +5,7 @@ import java.util.List;
 import com.ems.dto.request.RecordingMetadataRequest;
 import com.ems.dto.request.SessionMonitoringUpdateRequest;
 import com.ems.dto.request.ViolationReportRequest;
+import com.ems.dto.response.ProctorEvidenceResponse;
 import com.ems.dto.response.ProctoringSessionResponse;
 import com.ems.dto.response.VideoRecordingResponse;
 import com.ems.dto.response.ViolationResponse;
@@ -31,4 +32,15 @@ public interface ProctoringService {
     ProctoringSessionResponse getSessionSummary(String email, Long sessionId);
 
     List<ProctoringSessionResponse> getActiveSessions();
+
+    /** Frame metadata for a session's proctoring evidence, newest first. Image bytes excluded. */
+    List<ProctorEvidenceResponse> getSessionEvidenceForAdmin(Long sessionId);
+
+    /**
+     * Resolves one evidence frame to bytes, whichever storage kind holds it.
+     *
+     * <p>The branch lives here rather than in the caller so reviewer-facing code
+     * never has to know that some rows predate the move to object storage.</p>
+     */
+    ProctorEvidenceContent loadEvidenceFrameForAdmin(Long evidenceId);
 }

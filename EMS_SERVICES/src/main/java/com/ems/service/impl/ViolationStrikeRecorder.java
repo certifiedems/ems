@@ -26,6 +26,7 @@ import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.ProctorEvidenceStorageService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -74,6 +75,7 @@ public class ViolationStrikeRecorder {
     private final ExamSessionRepository examSessionRepository;
     private final ViolationRepository violationRepository;
     private final ProctorEvidenceRepository proctorEvidenceRepository;
+    private final ProctorEvidenceStorageService proctorEvidenceStorageService;
     private final ExamInvalidationHandler examInvalidationHandler;
 
     /**
@@ -288,6 +290,12 @@ public class ViolationStrikeRecorder {
      * <p>Evidence is best-effort by design: a malformed or oversized frame must never
      * prevent the strike itself from being recorded, so failures here are logged and
      * swallowed rather than rolled back.</p>
+     *
+     * <p>Where object storage is configured, only a key is written and
+     * {@code evidence_payload} is left null. Evidence is the one table here that
+     * grows without bound — every violation of every attempt — so keeping the bytes
+     * out of the database is what stops it from consuming the same storage quota as
+     * questions, answers and submissions.</p>
      */
     private Long persistEvidence(ExamSession session, Violation violation,
             ViolationRequestDTO request, Instant capturedAt) {
@@ -296,17 +304,52 @@ public class ViolationStrikeRecorder {
             return null;
         }
 
-        ProctorEvidence evidence = proctorEvidenceRepository.save(ProctorEvidence.builder()
+        String objectStorageKey = offloadFrame(session, violation, frame);
+
+        ProctorEvidence.ProctorEvidenceBuilder evidence = ProctorEvidence.builder()
                 .violation(violation)
                 .examSession(session)
-                .storageKind(EvidenceStorageKind.INLINE_BASE64)
                 .mediaType(frame.mediaType())
-                .evidencePayload(frame.base64Payload())
                 .payloadBytes(frame.byteLength())
-                .capturedAt(capturedAt)
-                .build());
+                .capturedAt(capturedAt);
 
-        return evidence.getId();
+        /*
+         * Exactly one of the two columns is populated, which is what the
+         * chk_evidence_payload_present constraint on the table requires.
+         */
+        if (objectStorageKey != null) {
+            evidence.storageKind(EvidenceStorageKind.OBJECT_STORAGE)
+                    .objectStorageKey(objectStorageKey);
+        } else {
+            evidence.storageKind(EvidenceStorageKind.INLINE_BASE64)
+                    .evidencePayload(frame.base64Payload());
+        }
+
+        return proctorEvidenceRepository.save(evidence.build()).getId();
+    }
+
+    /**
+     * Uploads the frame to object storage, or returns {@code null} to leave it inline.
+     *
+     * <p>An upload failure degrades to the inline column rather than propagating:
+     * losing the frame — or worse, the strike — because a bucket was briefly
+     * unreachable is a far worse outcome than one oversized row. The fallback is
+     * logged at WARN so a persistently broken bucket is visible rather than silently
+     * refilling the database.</p>
+     */
+    private String offloadFrame(ExamSession session, Violation violation, DecodedFrame frame) {
+        if (!proctorEvidenceStorageService.isObjectStorageEnabled()) {
+            return null;
+        }
+
+        try {
+            return proctorEvidenceStorageService.storeEvidence(
+                    frame.bytes(), frame.mediaType(), session.getId(), violation.getId());
+        } catch (RuntimeException ex) {
+            log.warn("Evidence upload failed for sessionId={} violationId={}; storing inline instead: {}",
+                    session.getId(), violation.getId(), ex.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -340,21 +383,27 @@ public class ViolationStrikeRecorder {
         }
 
         try {
-            // Decoded purely to validate the frame and record its true byte size;
-            // the array is discarded because the base64 form is what we persist.
+            // Decoding validates the frame and yields its true byte size. Both forms
+            // are kept: the raw bytes are what object storage takes, the base64 string
+            // is what the inline column takes, and which one is used is not known
+            // until the upload has been attempted.
             byte[] decoded = Base64.getDecoder().decode(payload);
             if (decoded.length == 0) {
                 return null;
             }
-            return new DecodedFrame(payload, mediaType, decoded.length);
+            return new DecodedFrame(payload, decoded, mediaType);
         } catch (IllegalArgumentException ex) {
             log.warn("Discarding malformed evidence frame for sessionId={}: {}", session.getId(), ex.getMessage());
             return null;
         }
     }
 
-    /** Validated frame ready for persistence. */
-    private record DecodedFrame(String base64Payload, String mediaType, long byteLength) {
+    /** Validated frame ready for persistence, in both forms the two storage kinds need. */
+    private record DecodedFrame(String base64Payload, byte[] bytes, String mediaType) {
+
+        long byteLength() {
+            return bytes.length;
+        }
     }
 
     private String buildDescription(ViolationRequestDTO request) {

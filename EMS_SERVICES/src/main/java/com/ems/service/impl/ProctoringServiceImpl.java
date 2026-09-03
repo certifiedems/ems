@@ -1,6 +1,7 @@
 package com.ems.service.impl;
 
 import java.time.Instant;
+import java.util.Base64;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -13,11 +14,13 @@ import org.springframework.transaction.annotation.Transactional;
 import com.ems.dto.request.RecordingMetadataRequest;
 import com.ems.dto.request.SessionMonitoringUpdateRequest;
 import com.ems.dto.request.ViolationReportRequest;
+import com.ems.dto.response.ProctorEvidenceResponse;
 import com.ems.dto.response.ProctoringSessionResponse;
 import com.ems.dto.response.VideoRecordingResponse;
 import com.ems.dto.response.ViolationResponse;
 import com.ems.dto.response.ViolationSummaryResponse;
 import com.ems.entity.ExamSession;
+import com.ems.entity.ProctorEvidence;
 import com.ems.entity.VideoRecording;
 import com.ems.entity.Violation;
 import com.ems.enums.ExamStatus;
@@ -26,8 +29,11 @@ import com.ems.enums.ViolationType;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.ExamSessionRepository;
+import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.VideoRecordingRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.ProctorEvidenceContent;
+import com.ems.service.ProctorEvidenceStorageService;
 import com.ems.service.ProctoringService;
 
 import lombok.RequiredArgsConstructor;
@@ -68,6 +74,8 @@ public class ProctoringServiceImpl implements ProctoringService {
 	private final ExamSessionRepository examSessionRepository;
 	private final VideoRecordingRepository videoRecordingRepository;
 	private final ViolationRepository violationRepository;
+	private final ProctorEvidenceRepository proctorEvidenceRepository;
+	private final ProctorEvidenceStorageService proctorEvidenceStorageService;
 	private final ExamInvalidationHandler examInvalidationHandler;
 
 	@Override
@@ -192,6 +200,47 @@ public class ProctoringServiceImpl implements ProctoringService {
 		return examSessionRepository.findBySessionStatusOrderBySessionStartTimeDesc(ExamStatus.IN_PROGRESS).stream()
 				.map(this::toSessionResponse)
 				.toList();
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public List<ProctorEvidenceResponse> getSessionEvidenceForAdmin(Long sessionId) {
+		findSessionById(sessionId);
+		return proctorEvidenceRepository.findEvidenceMetadataBySession(sessionId);
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public ProctorEvidenceContent loadEvidenceFrameForAdmin(Long evidenceId) {
+		ProctorEvidence evidence = proctorEvidenceRepository.findById(evidenceId)
+				.orElseThrow(() -> new ResourceNotFoundException("Proctoring evidence not found"));
+
+		/*
+		 * Rows written before frames moved to R2 still carry their bytes in
+		 * evidence_payload, and no backfill moves them, so both branches stay
+		 * live for as long as those rows are retained.
+		 */
+		return switch (evidence.getStorageKind()) {
+			case OBJECT_STORAGE -> proctorEvidenceStorageService.loadEvidence(evidence.getObjectStorageKey());
+			case INLINE_BASE64 -> decodeInlineEvidence(evidence);
+		};
+	}
+
+	private ProctorEvidenceContent decodeInlineEvidence(ProctorEvidence evidence) {
+		String payload = evidence.getEvidencePayload();
+		if (payload == null || payload.isBlank()) {
+			throw new ResourceNotFoundException("Proctoring evidence frame is missing");
+		}
+
+		try {
+			return new ProctorEvidenceContent(
+					Base64.getDecoder().decode(payload), evidence.getMediaType(), null);
+		} catch (IllegalArgumentException ex) {
+			// The write path validated this on the way in, so a failure here means
+			// the stored row is corrupt rather than the request being bad.
+			log.warn("Stored evidence payload is not valid base64: evidenceId={}", evidence.getId());
+			throw new BusinessException("Proctoring evidence frame is corrupt", HttpStatus.INTERNAL_SERVER_ERROR);
+		}
 	}
 
 	private ExamSession findOwnedSession(String email, Long sessionId) {
