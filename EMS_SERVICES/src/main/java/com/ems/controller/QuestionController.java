@@ -16,8 +16,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.ems.dto.request.BulkQuestionDeleteRequest;
 import com.ems.dto.request.QuestionUpsertRequest;
 import com.ems.dto.response.ApiResponse;
+import com.ems.dto.response.BulkQuestionDeleteResponse;
 import com.ems.dto.response.BulkQuestionUploadResponse;
 import com.ems.dto.response.QuestionResponse;
 import com.ems.enums.CertificationLevel;
@@ -62,6 +64,12 @@ public class QuestionController {
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long questionId) {
         questionService.delete(questionId);
         return ok("Question deleted successfully", null);
+    }
+
+    @PostMapping("/bulk-delete")
+    public ResponseEntity<ApiResponse<BulkQuestionDeleteResponse>> bulkDelete(
+            @Valid @RequestBody BulkQuestionDeleteRequest request) {
+        return ok("Bulk delete completed", questionService.bulkDelete(request.questionIds()));
     }
 
     @GetMapping

@@ -12,6 +12,7 @@ import EmptyState from '../../components/common/EmptyState'
 import AddIcon from '@mui/icons-material/AddRounded'
 import DeleteIcon from '@mui/icons-material/DeleteRounded'
 import UploadFileIcon from '@mui/icons-material/UploadFileRounded'
+import DownloadIcon from '@mui/icons-material/DownloadRounded'
 
 const LEVELS = ['L1', 'L2', 'L3']
 const CATEGORIES = ['TECHNICAL', 'FUNCTIONAL', 'COMPLIANCE', 'GENERAL']
@@ -37,6 +38,9 @@ const AdminQuestionsPage = () => {
   const [form, setForm] = useState(emptyForm)
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState(null)
+  const [selectedIds, setSelectedIds] = useState([])
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -101,10 +105,81 @@ const AdminQuestionsPage = () => {
     try {
       await adminAPI.deleteQuestion(id)
       setFeedback({ severity: 'success', msg: 'Question deleted' })
+      setSelectedIds((ids) => ids.filter((i) => i !== id))
       load()
     } catch (err) {
       setFeedback({ severity: 'error', msg: err.response?.data?.message || 'Failed to delete' })
     }
+  }
+
+  const toggleSelectOne = (id, checked) => {
+    setSelectedIds((ids) => (checked ? [...ids, id] : ids.filter((i) => i !== id)))
+  }
+
+  const toggleSelectAll = (checked) => {
+    setSelectedIds(checked ? questions.map((q) => q.id) : [])
+  }
+
+  const handleBulkDelete = async () => {
+    setBulkDeleting(true)
+    try {
+      const res = await adminAPI.bulkDeleteQuestions(selectedIds)
+      const { deletedCount, failedCount, errors } = res.data.data
+      setFeedback({
+        severity: failedCount > 0 ? 'warning' : 'success',
+        msg: failedCount > 0
+          ? `Deleted ${deletedCount}, failed ${failedCount}: ${errors.join('; ')}`
+          : `Deleted ${deletedCount} question(s)`
+      })
+      setSelectedIds([])
+      setBulkDeleteOpen(false)
+      load()
+    } catch (err) {
+      setFeedback({ severity: 'error', msg: err.response?.data?.message || 'Bulk delete failed' })
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
+  const csvEscape = (value) => {
+    const str = String(value ?? '')
+    return /[",\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str
+  }
+
+  const handleExport = () => {
+    const rows = selectedIds.length > 0
+      ? questions.filter((q) => selectedIds.includes(q.id))
+      : questions
+    if (rows.length === 0) {
+      setFeedback({ severity: 'error', msg: 'No questions to export' })
+      return
+    }
+
+    const header = ['quesID', 'question', 'option1', 'option2', 'option3', 'option4', 'answer', 'severity', 'category', 'marks']
+    const lines = [header.join(',')]
+    rows.forEach((q) => {
+      const options = [...(q.options || [])]
+      while (options.length < 4) options.push('')
+      lines.push([
+        q.questionCode,
+        q.questionText,
+        options[0], options[1], options[2], options[3],
+        (q.correctOptions || []).join('|'),
+        q.severity,
+        q.questionCategory,
+        q.marks
+      ].map(csvEscape).join(','))
+    })
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `questions-export-${new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
   }
 
   const handleBulkUpload = async (e) => {
@@ -126,6 +201,13 @@ const AdminQuestionsPage = () => {
       <Table>
         <TableHead>
           <TableRow>
+            <TableCell padding="checkbox">
+              <Checkbox
+                indeterminate={selectedIds.length > 0 && selectedIds.length < questions.length}
+                checked={questions.length > 0 && selectedIds.length === questions.length}
+                onChange={(e) => toggleSelectAll(e.target.checked)}
+              />
+            </TableCell>
             <TableCell>Code</TableCell>
             <TableCell>Question</TableCell>
             <TableCell>Level</TableCell>
@@ -136,7 +218,13 @@ const AdminQuestionsPage = () => {
         </TableHead>
         <TableBody>
           {questions.map((q) => (
-            <TableRow key={q.id} hover>
+            <TableRow key={q.id} hover selected={selectedIds.includes(q.id)}>
+              <TableCell padding="checkbox">
+                <Checkbox
+                  checked={selectedIds.includes(q.id)}
+                  onChange={(e) => toggleSelectOne(q.id, e.target.checked)}
+                />
+              </TableCell>
               <TableCell>{q.questionCode}</TableCell>
               <TableCell sx={{ maxWidth: 340, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {q.questionText}
@@ -178,6 +266,24 @@ const AdminQuestionsPage = () => {
         subtitle="Create, import and manage exam questions"
         action={
           <Stack direction="row" spacing={1}>
+            {selectedIds.length > 0 && (
+              <Button
+                color="error"
+                variant="outlined"
+                startIcon={<DeleteIcon />}
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                Delete selected ({selectedIds.length})
+              </Button>
+            )}
+            <Button
+              variant="outlined"
+              startIcon={<DownloadIcon />}
+              onClick={handleExport}
+              disabled={questions.length === 0}
+            >
+              Export{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
+            </Button>
             <Button variant="outlined" component="label" startIcon={<UploadFileIcon />}>
               Bulk upload
               <input type="file" hidden accept=".csv,.xlsx,.json" onChange={handleBulkUpload} />
@@ -248,6 +354,19 @@ const AdminQuestionsPage = () => {
           <Button onClick={() => setOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleCreate} disabled={saving}>
             {saving ? 'Creating…' : 'Create'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={bulkDeleteOpen} onClose={() => setBulkDeleteOpen(false)}>
+        <DialogTitle>Delete {selectedIds.length} question(s)?</DialogTitle>
+        <DialogContent>
+          This will permanently delete the selected question(s). This action cannot be undone.
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setBulkDeleteOpen(false)} disabled={bulkDeleting}>Cancel</Button>
+          <Button color="error" variant="contained" onClick={handleBulkDelete} disabled={bulkDeleting}>
+            {bulkDeleting ? 'Deleting…' : 'Delete'}
           </Button>
         </DialogActions>
       </Dialog>

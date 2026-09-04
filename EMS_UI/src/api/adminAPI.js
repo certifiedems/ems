@@ -59,6 +59,8 @@ export const adminAPI = {
 
 	deleteQuestion: (questionId) => apiClient.delete(`/questions/${questionId}`),
 
+	bulkDeleteQuestions: (questionIds) => apiClient.post('/questions/bulk-delete', { questionIds }),
+
 	bulkUploadQuestions: (file) => {
 		const formData = new FormData()
 		formData.append('file', file)

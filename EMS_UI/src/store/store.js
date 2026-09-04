@@ -2,7 +2,7 @@
 import { configureStore, combineReducers } from '@reduxjs/toolkit'
 import { persistStore, persistReducer, createTransform } from 'redux-persist'
 import storage from 'redux-persist/lib/storage'
-import authReducer from './slices/authSlice'
+import authReducer, { loginSuccess, logout } from './slices/authSlice'
 import userReducer from './slices/userSlice'
 import certificationReducer from './slices/certificationSlice'
 import examReducer from './slices/examSlice'
@@ -12,7 +12,7 @@ import proctoringReducer from './slices/proctoringSlice'
 import reportReducer from './slices/reportSlice'
 import adminReducer from './slices/adminSlice'
 
-const rootReducer = combineReducers({
+const appReducer = combineReducers({
   auth: authReducer,
   user: userReducer,
   certification: certificationReducer,
@@ -23,6 +23,27 @@ const rootReducer = combineReducers({
   report: reportReducer,
   admin: adminReducer
 })
+
+/**
+ * Wipes every slice back to its initial state when a session begins or ends.
+ *
+ * Only `auth` and `user` are persisted, but `user.profile` (name, email, photo
+ * shown in the header and sidebar) outlives a logout because `logout` clears
+ * `auth` alone. The next person to sign in then sees the previous account's
+ * identity — and stale admin tables, exam progress, etc. from the other slices —
+ * until each screen happens to refetch. Resetting on the way in *and* out is the
+ * single place that covers all of it: `loginSuccess` self-heals a client that
+ * already has stale data on disk, `logout` stops it being written in the first
+ * place. Passing `undefined` makes combineReducers hand each slice its own
+ * initialState; the triggering action still runs (so `loginSuccess` repopulates
+ * `auth`), and redux-persist flushes the cleared shape to storage.
+ */
+const rootReducer = (state, action) => {
+  if (action.type === loginSuccess.type || action.type === logout.type) {
+    return appReducer(undefined, action)
+  }
+  return appReducer(state, action)
+}
 
 /**
  * Strips transient request-lifecycle flags before they reach localStorage.

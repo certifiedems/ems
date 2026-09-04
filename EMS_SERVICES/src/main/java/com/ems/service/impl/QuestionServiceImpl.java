@@ -22,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.ems.dto.request.QuestionUpsertRequest;
+import com.ems.dto.response.BulkQuestionDeleteResponse;
 import com.ems.dto.response.BulkQuestionUploadResponse;
 import com.ems.dto.response.QuestionResponse;
 import com.ems.entity.Question;
@@ -101,6 +102,27 @@ public class QuestionServiceImpl implements QuestionService {
 				.orElseThrow(() -> new ResourceNotFoundException("Question not found"));
 		questionRepository.delete(existingQuestion);
 		log.info("Question deleted: id={}, code={}", existingQuestion.getId(), existingQuestion.getQuestionCode());
+	}
+
+	@Override
+	@CacheEvict(cacheNames = { "questionById", "questionSearch", "reports" }, allEntries = true)
+	public BulkQuestionDeleteResponse bulkDelete(List<Long> questionIds) {
+		List<String> errors = new ArrayList<>();
+		int deletedCount = 0;
+
+		for (Long questionId : questionIds) {
+			Question question = questionRepository.findById(questionId).orElse(null);
+			if (question == null) {
+				errors.add("Question id " + questionId + " not found");
+				continue;
+			}
+			questionRepository.delete(question);
+			deletedCount++;
+		}
+
+		log.info("Bulk question delete: requested={}, deleted={}, failed={}",
+				questionIds.size(), deletedCount, errors.size());
+		return new BulkQuestionDeleteResponse(questionIds.size(), deletedCount, errors.size(), errors);
 	}
 
 	@Override
