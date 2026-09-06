@@ -17,6 +17,9 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.PaymentInitiationRequest;
 import com.ems.dto.request.PaymentRefundRequest;
 import com.ems.dto.request.PaymentVerificationRequest;
@@ -33,6 +36,7 @@ import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.PaymentRepository;
 import com.ems.repository.UserRepository;
+import com.ems.service.AuditService;
 import com.ems.service.PaymentReceiptContent;
 import com.ems.service.PaymentReceiptPdfGeneratorService;
 import com.ems.service.PaymentReceiptPdfGeneratorService.PaymentReceiptData;
@@ -57,19 +61,22 @@ public class PaymentServiceImpl implements PaymentService {
 	private final UserRepository userRepository;
 	private final PaymentReceiptPdfGeneratorService receiptPdfGeneratorService;
 	private final Map<PaymentProvider, PaymentProviderStrategy> providerStrategies;
+	private final AuditService auditService;
 
 	public PaymentServiceImpl(
 			PaymentRepository paymentRepository,
 			CertificationApplicationRepository certificationApplicationRepository,
 			UserRepository userRepository,
 			PaymentReceiptPdfGeneratorService receiptPdfGeneratorService,
-			List<PaymentProviderStrategy> providerStrategies) {
+			List<PaymentProviderStrategy> providerStrategies,
+			AuditService auditService) {
 		this.paymentRepository = paymentRepository;
 		this.certificationApplicationRepository = certificationApplicationRepository;
 		this.userRepository = userRepository;
 		this.receiptPdfGeneratorService = receiptPdfGeneratorService;
 		this.providerStrategies = providerStrategies.stream()
 				.collect(Collectors.toMap(PaymentProviderStrategy::provider, Function.identity()));
+		this.auditService = auditService;
 	}
 
 	@Override
@@ -160,6 +167,18 @@ public class PaymentServiceImpl implements PaymentService {
 			certificationApplicationRepository.save(application);
 		}
 
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.PAYMENT)
+				.outcome(savedPayment.getPaymentStatus() == PaymentStatus.SUCCESS
+						? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
+				.actorEmail(user.getEmail())
+				.actorUserId(user.getUserId())
+				.targetUserId(user.getUserId())
+				.targetType("PAYMENT")
+				.targetId(transactionId)
+				.description("Payment verified as " + savedPayment.getPaymentStatus())
+				.build());
+
 		return toResponse(savedPayment, verification);
 	}
 
@@ -184,6 +203,16 @@ public class PaymentServiceImpl implements PaymentService {
 			application.setPaymentStatus(PaymentStatus.REFUNDED);
 			certificationApplicationRepository.save(application);
 		}
+
+		User user = payment.getUser();
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetUserId(user == null ? null : user.getUserId())
+				.targetType("PAYMENT")
+				.targetId(transactionId)
+				.description("Refunded payment " + transactionId)
+				.build());
 
 		return toResponse(savedPayment, refund);
 	}
@@ -229,6 +258,18 @@ public class PaymentServiceImpl implements PaymentService {
 							+ "billed={} {}, callback reported={} {}",
 					payment.getTransactionId(), payment.getAmount(), payment.getCurrency(),
 					paidAmount, paidCurrency);
+			// No authenticated caller here -- this is Razorpay's server calling
+			// ours -- so actorEmail is left unset and AuditService resolves it to
+			// SYSTEM, same as every other webhook-originated entry below.
+			auditService.record(AuditEvent.builder()
+					.eventType(AuditEventType.PAYMENT)
+					.outcome(AuditOutcome.FAILURE)
+					.targetUserId(payment.getUser() == null ? null : payment.getUser().getUserId())
+					.targetType("PAYMENT")
+					.targetId(payment.getTransactionId())
+					.description("Gateway callback refused: billed " + payment.getAmount() + " " + payment.getCurrency()
+							+ " but callback reported " + paidAmount + " " + paidCurrency)
+					.build());
 			return;
 		}
 
@@ -252,6 +293,14 @@ public class PaymentServiceImpl implements PaymentService {
 
 		log.info("Payment settled from gateway callback: transactionId={}, status={}, providerReference={}",
 				savedPayment.getTransactionId(), status, providerReference);
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.PAYMENT)
+				.outcome(status == PaymentStatus.SUCCESS ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
+				.targetUserId(savedPayment.getUser() == null ? null : savedPayment.getUser().getUserId())
+				.targetType("PAYMENT")
+				.targetId(savedPayment.getTransactionId())
+				.description("Payment settled via gateway callback as " + status)
+				.build());
 	}
 
 	@Override

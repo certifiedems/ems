@@ -24,6 +24,7 @@ import EventNoteIcon from '@mui/icons-material/EventNoteRounded'
 import DateRangeIcon from '@mui/icons-material/DateRangeRounded'
 import TableChartIcon from '@mui/icons-material/TableChartRounded'
 import PaidIcon from '@mui/icons-material/PaidRounded'
+import HistoryRounded from '@mui/icons-material/HistoryRounded'
 import { logout } from '../../store/slices/authSlice'
 import { authAPI } from '../../api/authAPI'
 import { useIdleTimeout, clearIdleStamp } from '../../hooks/useIdleTimeout'
@@ -68,6 +69,7 @@ const LayoutWrapper = ({ children }) => {
     { label: 'Payments', icon: <PaidIcon />, path: '/admin/payments' },
     { label: 'Exam Reports', icon: <TableChartIcon />, path: '/admin/exam-reports' },
     { label: 'Violations', icon: <GavelIcon />, path: '/admin/violations' },
+    { label: 'Audit Log', icon: <HistoryRounded />, path: '/admin/audit-log' },
     { label: 'Reports', icon: <AnalyticsIcon />, path: '/admin/reports' }
   ]
 

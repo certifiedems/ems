@@ -13,6 +13,9 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.ChangePasswordRequest;
 import com.ems.dto.request.ForgotPasswordRequest;
 import com.ems.dto.request.LoginRequest;
@@ -39,6 +42,7 @@ import com.ems.repository.UserRepository;
 import com.ems.security.JwtProperties;
 import com.ems.security.JwtTokenProvider;
 import com.ems.security.PasswordPolicyValidator;
+import com.ems.service.AuditService;
 import com.ems.service.AuthenticationService;
 import com.ems.service.ProfilePhotoStorageService;
 import com.ems.util.TokenHashUtil;
@@ -66,6 +70,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 	private final JwtProperties jwtProperties;
 	private final PasswordPolicyValidator passwordPolicyValidator;
 	private final ProfilePhotoStorageService profilePhotoStorageService;
+	private final AuditService auditService;
 
 	@Override
 	public AuthResponse register(RegisterRequest request) {
@@ -101,6 +106,15 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 		User savedUser = userRepository.save(user);
 		log.info("User registered successfully: userId={}, email={}",
 				savedUser.getUserId(), savedUser.getEmail());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.REGISTRATION)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(savedUser.getEmail())
+				.actorUserId(savedUser.getUserId())
+				.targetUserId(savedUser.getUserId())
+				.targetType("USER")
+				.description("New user registered")
+				.build());
 
 		return issueTokens(savedUser);
 	}
@@ -113,6 +127,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 			authenticationManager.authenticate(new UsernamePasswordAuthenticationToken(email, request.password()));
 		} catch (BadCredentialsException ex) {
 			log.warn("Login failed due to bad credentials for email={}", email);
+			recordLoginFailure(email, null, "Invalid email or password");
 			throw new UnauthorizedException("Invalid email or password");
 		}
 
@@ -120,11 +135,20 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 				.orElseThrow(() -> new UnauthorizedException("Invalid email or password"));
 
 		if (!user.isEnabled() || !user.isAccountNonLocked()) {
+			recordLoginFailure(email, user.getUserId(), "Account is disabled or locked");
 			throw new UnauthorizedException("Account is disabled or locked");
 		}
 
 		refreshTokenRepository.revokeAllActiveByUserId(user.getId());
 		log.info("Login success for userId={}, email={}", user.getUserId(), user.getEmail());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.LOGIN_SUCCESS)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(user.getEmail())
+				.actorUserId(user.getUserId())
+				.targetUserId(user.getUserId())
+				.targetType("USER")
+				.build());
 		return issueTokens(user);
 	}
 
@@ -157,31 +181,58 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 	@Override
 	public MessageResponse logout(LogoutRequest request) {
 		String tokenHash = TokenHashUtil.sha256Hex(request.refreshToken());
+		User user = refreshTokenRepository.findByTokenHashAndRevokedFalse(tokenHash)
+				.map(RefreshToken::getUser)
+				.orElse(null);
 		int updated = refreshTokenRepository.revokeByTokenHash(tokenHash);
 		if (updated > 0) {
 			log.info("Refresh token revoked successfully during logout");
+			auditService.record(AuditEvent.builder()
+					.eventType(AuditEventType.LOGOUT)
+					.outcome(AuditOutcome.SUCCESS)
+					.actorEmail(user == null ? null : user.getEmail())
+					.actorUserId(user == null ? null : user.getUserId())
+					.targetUserId(user == null ? null : user.getUserId())
+					.targetType("USER")
+					.build());
 		}
 		return new MessageResponse("Logged out successfully");
 	}
 
 	@Override
 	public ForgotPasswordResponse forgotPassword(ForgotPasswordRequest request) {
-		userRepository.findByEmailIgnoreCase(request.email().trim().toLowerCase())
-				.ifPresent(user -> {
-					String rawToken = UUID.randomUUID() + "." + UUID.randomUUID();
-					Instant expiresAt = Instant.now().plusSeconds(30L * 60L);
+		String email = request.email().trim().toLowerCase();
+		User user = userRepository.findByEmailIgnoreCase(email).orElse(null);
 
-					PasswordResetToken token = PasswordResetToken.builder()
-							.user(user)
-							.tokenHash(TokenHashUtil.sha256Hex(rawToken))
-							.expiresAt(expiresAt)
-							.used(false)
-							.build();
+		if (user != null) {
+			String rawToken = UUID.randomUUID() + "." + UUID.randomUUID();
+			Instant expiresAt = Instant.now().plusSeconds(30L * 60L);
 
-					passwordResetTokenRepository.save(token);
-					log.info("Password reset token generated for userId={} and queued for out-of-band delivery",
-							user.getUserId());
-				});
+			PasswordResetToken token = PasswordResetToken.builder()
+					.user(user)
+					.tokenHash(TokenHashUtil.sha256Hex(rawToken))
+					.expiresAt(expiresAt)
+					.used(false)
+					.build();
+
+			passwordResetTokenRepository.save(token);
+			log.info("Password reset token generated for userId={} and queued for out-of-band delivery",
+					user.getUserId());
+		}
+
+		// Logged regardless of whether the email matched an account, same as the
+		// generic response below, so an admin reviewing the trail can spot an
+		// address being probed for registered accounts without that visibility
+		// leaking back to the caller.
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.PASSWORD_RESET)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(email)
+				.actorUserId(user == null ? null : user.getUserId())
+				.targetUserId(user == null ? null : user.getUserId())
+				.targetType("USER")
+				.description("Password reset requested")
+				.build());
 
 		return new ForgotPasswordResponse(GENERIC_FORGOT_PASSWORD_MESSAGE);
 	}
@@ -192,13 +243,31 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 
 		String tokenHash = TokenHashUtil.sha256Hex(request.token());
 		PasswordResetToken resetToken = passwordResetTokenRepository.findByTokenHashAndUsedFalse(tokenHash)
-				.orElseThrow(() -> new UnauthorizedException("Invalid password reset token"));
+				.orElse(null);
 
-		if (resetToken.getExpiresAt().isBefore(Instant.now())) {
-			throw new UnauthorizedException("Password reset token expired");
+		if (resetToken == null) {
+			auditService.record(AuditEvent.builder()
+					.eventType(AuditEventType.PASSWORD_RESET)
+					.outcome(AuditOutcome.FAILURE)
+					.description("Password reset attempted with an invalid or already-used token")
+					.build());
+			throw new UnauthorizedException("Invalid password reset token");
 		}
 
 		User user = resetToken.getUser();
+		if (resetToken.getExpiresAt().isBefore(Instant.now())) {
+			auditService.record(AuditEvent.builder()
+					.eventType(AuditEventType.PASSWORD_RESET)
+					.outcome(AuditOutcome.FAILURE)
+					.actorEmail(user.getEmail())
+					.actorUserId(user.getUserId())
+					.targetUserId(user.getUserId())
+					.targetType("USER")
+					.description("Password reset attempted with an expired token")
+					.build());
+			throw new UnauthorizedException("Password reset token expired");
+		}
+
 		user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
 		userRepository.save(user);
 
@@ -207,6 +276,15 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 
 		refreshTokenRepository.revokeAllActiveByUserId(user.getId());
 		log.info("Password reset completed for userId={}", user.getUserId());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.PASSWORD_RESET)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(user.getEmail())
+				.actorUserId(user.getUserId())
+				.targetUserId(user.getUserId())
+				.targetType("USER")
+				.description("Password reset completed")
+				.build());
 		return new MessageResponse("Password reset successful");
 	}
 
@@ -216,6 +294,15 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 				.orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
 		if (!passwordEncoder.matches(request.currentPassword(), user.getPasswordHash())) {
+			auditService.record(AuditEvent.builder()
+					.eventType(AuditEventType.PASSWORD_CHANGE)
+					.outcome(AuditOutcome.FAILURE)
+					.actorEmail(user.getEmail())
+					.actorUserId(user.getUserId())
+					.targetUserId(user.getUserId())
+					.targetType("USER")
+					.description("Password change attempted with an incorrect current password")
+					.build());
 			throw new UnauthorizedException("Current password is incorrect");
 		}
 
@@ -228,8 +315,28 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 		userRepository.save(user);
 		refreshTokenRepository.revokeAllActiveByUserId(user.getId());
 		log.info("Password changed successfully for userId={}", user.getUserId());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.PASSWORD_CHANGE)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(user.getEmail())
+				.actorUserId(user.getUserId())
+				.targetUserId(user.getUserId())
+				.targetType("USER")
+				.build());
 
 		return new MessageResponse("Password changed successfully");
+	}
+
+	private void recordLoginFailure(String email, String userId, String reason) {
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.LOGIN_FAILURE)
+				.outcome(AuditOutcome.FAILURE)
+				.actorEmail(email)
+				.actorUserId(userId)
+				.targetUserId(userId)
+				.targetType("USER")
+				.description(reason)
+				.build());
 	}
 
 	@Override

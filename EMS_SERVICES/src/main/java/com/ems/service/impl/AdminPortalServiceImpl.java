@@ -1,14 +1,20 @@
 package com.ems.service.impl;
 
+import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
+import com.ems.dto.response.AdminAuditLogResponse;
 import com.ems.dto.response.AdminUserResponse;
 import com.ems.dto.response.AdminPaymentResponse;
 import com.ems.dto.response.AdminViolationResponse;
@@ -18,6 +24,7 @@ import com.ems.dto.response.CertificationApplicationResponse;
 import com.ems.dto.response.CertificationSummaryResponse;
 import com.ems.dto.response.QuestionResponse;
 import com.ems.dto.response.VideoRecordingResponse;
+import com.ems.entity.AuditLog;
 import com.ems.entity.Certificate;
 import com.ems.entity.CertificationApplication;
 import com.ems.entity.Exam;
@@ -31,6 +38,7 @@ import com.ems.enums.CertificationLevel;
 import com.ems.enums.ProctoringAction;
 import com.ems.enums.QuestionSeverity;
 import com.ems.exception.ResourceNotFoundException;
+import com.ems.repository.AuditLogRepository;
 import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.CertificationRepository;
 import com.ems.repository.CertificateRepository;
@@ -40,6 +48,7 @@ import com.ems.repository.UserRepository;
 import com.ems.repository.VideoRecordingRepository;
 import com.ems.repository.ViolationRepository;
 import com.ems.service.AdminPortalService;
+import com.ems.service.AuditService;
 import com.ems.service.CertificateService;
 import com.ems.service.CertificateTemplate;
 import com.ems.service.QuestionService;
@@ -62,8 +71,10 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 	private final ViolationRepository violationRepository;
 	private final VideoRecordingRepository videoRecordingRepository;
 	private final ExamSessionRepository examSessionRepository;
+	private final AuditLogRepository auditLogRepository;
 	private final QuestionService questionService;
 	private final CertificateService certificateService;
+	private final AuditService auditService;
 
 	@Override
 	public List<AdminUserResponse> searchUsers(String searchText, Boolean enabled) {
@@ -94,6 +105,14 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 		user.setEnabled(enabled);
 		User saved = userRepository.save(user);
 		log.info("Admin toggled enabled={} for userId={}", enabled, saved.getUserId());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetUserId(saved.getUserId())
+				.targetType("USER")
+				.targetId(String.valueOf(saved.getId()))
+				.description((enabled ? "Enabled" : "Disabled") + " user account " + saved.getUserId())
+				.build());
 		return toAdminUserResponse(saved);
 	}
 
@@ -105,6 +124,14 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 		user.setAccountNonLocked(!locked);
 		User saved = userRepository.save(user);
 		log.info("Admin toggled accountNonLocked={} for userId={}", !locked, saved.getUserId());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetUserId(saved.getUserId())
+				.targetType("USER")
+				.targetId(String.valueOf(saved.getId()))
+				.description((locked ? "Locked" : "Unlocked") + " user account " + saved.getUserId())
+				.build());
 		return toAdminUserResponse(saved);
 	}
 
@@ -211,6 +238,39 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 		return videoRecordingRepository.findByExamSessionOrderByRecordingStartTimeDesc(session).stream()
 				.map(this::toRecordingResponse)
 				.toList();
+	}
+
+	@Override
+	public List<AdminAuditLogResponse> searchAuditLogs(AuditEventType eventType, AuditOutcome outcome, String actor,
+			String targetUserId, Instant from, Instant to, int limit) {
+		int cappedLimit = Math.max(1, Math.min(limit, 1000));
+		return auditLogRepository.search(
+				eventType,
+				outcome,
+				toLikePattern(actor),
+				targetUserId == null || targetUserId.isBlank() ? null : targetUserId.trim().toLowerCase(Locale.ROOT),
+				from,
+				to,
+				PageRequest.of(0, cappedLimit))
+				.stream()
+				.map(this::toAdminAuditLogResponse)
+				.toList();
+	}
+
+	private AdminAuditLogResponse toAdminAuditLogResponse(AuditLog auditLog) {
+		return new AdminAuditLogResponse(
+				auditLog.getId(),
+				auditLog.getEventType(),
+				auditLog.getOutcome(),
+				auditLog.getActorEmail(),
+				auditLog.getActorUserId(),
+				auditLog.getTargetUserId(),
+				auditLog.getTargetType(),
+				auditLog.getTargetId(),
+				auditLog.getDescription(),
+				auditLog.getIpAddress(),
+				auditLog.getCorrelationId(),
+				auditLog.getOccurredAt());
 	}
 
 	private User findUser(Long userId) {

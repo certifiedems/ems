@@ -10,8 +10,8 @@ const isLocalDev = import.meta.env.DEV && !import.meta.env.PROD
 //   ? ''
 //   : (import.meta.env?.VITE_API_URL || 'http://localhost:8080')
 // ==> Available at your primary URL https://ems-1ze5.onrender.com
-const API_BASE_URL = 'https://ems-1ze5.onrender.com'
-// const API_BASE_URL = 'http://localhost:8080'
+// const API_BASE_URL = 'https://ems-1ze5.onrender.com'
+const API_BASE_URL = 'http://localhost:8080'
 
 // Exported so the liveness probe in systemAPI can address the same host without
 // going through this client's auth interceptors.

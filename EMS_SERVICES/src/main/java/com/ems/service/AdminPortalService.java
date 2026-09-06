@@ -1,7 +1,11 @@
 package com.ems.service;
 
+import java.time.Instant;
 import java.util.List;
 
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
+import com.ems.dto.response.AdminAuditLogResponse;
 import com.ems.dto.response.AdminPaymentResponse;
 import com.ems.dto.response.AdminUserResponse;
 import com.ems.dto.response.AdminViolationResponse;
@@ -44,4 +48,7 @@ public interface AdminPortalService {
     List<VideoRecordingResponse> getAllRecordings();
 
     List<VideoRecordingResponse> getRecordingsForSession(Long sessionId);
+
+    List<AdminAuditLogResponse> searchAuditLogs(AuditEventType eventType, AuditOutcome outcome, String actor,
+            String targetUserId, Instant from, Instant to, int limit);
 }

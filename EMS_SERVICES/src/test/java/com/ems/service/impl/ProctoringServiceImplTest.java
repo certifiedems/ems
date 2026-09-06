@@ -33,6 +33,7 @@ import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.VideoRecordingRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.AuditService;
 import com.ems.service.ProctorEvidenceStorageService;
 
 @ExtendWith(MockitoExtension.class)
@@ -62,6 +63,9 @@ class ProctoringServiceImplTest {
 	@Mock
 	private ProctorEvidenceStorageService proctorEvidenceStorageService;
 
+	@Mock
+	private AuditService auditService;
+
 	private ProctoringServiceImpl proctoringService;
 
 	@BeforeEach
@@ -74,7 +78,8 @@ class ProctoringServiceImplTest {
 				violationRepository,
 				proctorEvidenceRepository,
 				proctorEvidenceStorageService,
-				examInvalidationHandler);
+				examInvalidationHandler,
+				auditService);
 	}
 
 	@Test

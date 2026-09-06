@@ -19,6 +19,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.ExamResultSubmissionRequest;
 import com.ems.dto.request.QuestionAnswerSubmissionRequest;
 import com.ems.dto.response.ExamResultResponse;
@@ -40,6 +43,7 @@ import com.ems.repository.CertificationRepository;
 import com.ems.repository.ExamAttemptRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.QuestionRepository;
+import com.ems.service.AuditService;
 import com.ems.service.ResultEvaluationService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -67,6 +71,7 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 	private final CertificationRepository certificationRepository;
 	private final ObjectMapper objectMapper;
 	private final ApplicationEventPublisher eventPublisher;
+	private final AuditService auditService;
 
 	@Override
 	@CacheEvict(cacheNames = { "reports", "dashboard" }, allEntries = true)
@@ -161,6 +166,16 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 
 		log.info("Result evaluated: sessionId={}, attempted={}, correct={}, wrong={}, percentage={}, status={}",
 				sessionId, attemptedQuestions, correctAnswers, wrongAnswers, percentage, resultStatus);
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.EXAM_END)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(email)
+				.actorUserId(session.getUser().getUserId())
+				.targetUserId(session.getUser().getUserId())
+				.targetType("EXAM_SESSION")
+				.targetId(String.valueOf(sessionId))
+				.description("Exam submitted, result " + resultStatus + " (" + percentage + "%)")
+				.build());
 
 		return toResultResponse(savedAttempt, totalMarks);
 	}

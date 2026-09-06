@@ -11,6 +11,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.RecordingMetadataRequest;
 import com.ems.dto.request.SessionMonitoringUpdateRequest;
 import com.ems.dto.request.ViolationReportRequest;
@@ -32,6 +35,7 @@ import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.VideoRecordingRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.AuditService;
 import com.ems.service.ProctorEvidenceContent;
 import com.ems.service.ProctorEvidenceStorageService;
 import com.ems.service.ProctoringService;
@@ -77,6 +81,7 @@ public class ProctoringServiceImpl implements ProctoringService {
 	private final ProctorEvidenceRepository proctorEvidenceRepository;
 	private final ProctorEvidenceStorageService proctorEvidenceStorageService;
 	private final ExamInvalidationHandler examInvalidationHandler;
+	private final AuditService auditService;
 
 	@Override
 	public VideoRecordingResponse recordVideoMetadata(String email, Long sessionId, RecordingMetadataRequest request) {
@@ -128,6 +133,17 @@ public class ProctoringServiceImpl implements ProctoringService {
 
 		if (actionTaken == ProctoringAction.EXAM_TERMINATED) {
 			markLatestApplicationAsFailedForRestart(session);
+			auditService.record(AuditEvent.builder()
+					.eventType(AuditEventType.EXAM_INVALIDATED)
+					.outcome(AuditOutcome.SUCCESS)
+					.actorEmail(email)
+					.actorUserId(session.getUser().getUserId())
+					.targetUserId(session.getUser().getUserId())
+					.targetType("EXAM_SESSION")
+					.targetId(String.valueOf(sessionId))
+					.description("Exam terminated after 3rd proctoring violation ("
+							+ request.violationType() + ")")
+					.build());
 		}
 
 		log.info("Proctoring violation recorded: sessionId={}, violationType={}, level={}, action={}",

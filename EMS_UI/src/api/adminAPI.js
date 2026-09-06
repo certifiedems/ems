@@ -34,6 +34,10 @@ export const adminAPI = {
 
 	getSessionRecordings: (sessionId) => apiClient.get(`/admin/sessions/${sessionId}/recordings`),
 
+	// Who did what, to whom, and whether it succeeded — logins, password
+	// resets, admin actions on users/payments/certificates, exam lifecycle.
+	getAuditLogs: (params) => apiClient.get('/admin/audit-logs', { params }),
+
 	// ----- Exam management (/api/exams) -----
 	getAllExams: (params) => apiClient.get('/exams', { params }),
 

@@ -50,6 +50,7 @@ import com.ems.repository.ExamRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.QuestionRepository;
 import com.ems.repository.UserRepository;
+import com.ems.service.AuditService;
 import com.ems.service.CertificationJourneyService;
 import com.ems.service.PaymentService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -83,6 +84,9 @@ class ExamWorkflowServiceImplTest {
 	@Mock
 	private PaymentService paymentService;
 
+	@Mock
+	private AuditService auditService;
+
 	private ExamWorkflowServiceImpl examWorkflowService;
 
 	@BeforeEach
@@ -96,7 +100,8 @@ class ExamWorkflowServiceImplTest {
 				questionRepository,
 				examSessionRepository,
 				paymentService,
-				new ObjectMapper());
+				new ObjectMapper(),
+				auditService);
 	}
 
 	@Test

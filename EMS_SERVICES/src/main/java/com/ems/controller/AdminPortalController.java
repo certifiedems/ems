@@ -1,8 +1,10 @@
 package com.ems.controller;
 
+import java.time.Instant;
 import java.util.List;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
@@ -13,6 +15,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
+import com.ems.dto.response.AdminAuditLogResponse;
 import com.ems.dto.response.AdminUserResponse;
 import com.ems.dto.response.AdminPaymentResponse;
 import com.ems.dto.response.AdminViolationResponse;
@@ -146,6 +151,21 @@ public class AdminPortalController {
             @PathVariable Long sessionId) {
         return ok("Session recordings fetched successfully",
                 adminPortalService.getRecordingsForSession(sessionId));
+    }
+
+    // — Audit trail
+
+    @GetMapping("/audit-logs")
+    public ResponseEntity<ApiResponse<List<AdminAuditLogResponse>>> searchAuditLogs(
+            @RequestParam(required = false) AuditEventType eventType,
+            @RequestParam(required = false) AuditOutcome outcome,
+            @RequestParam(required = false) String actor,
+            @RequestParam(required = false) String targetUserId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
+            @RequestParam(required = false, defaultValue = "200") int limit) {
+        return ok("Audit logs fetched successfully",
+                adminPortalService.searchAuditLogs(eventType, outcome, actor, targetUserId, from, to, limit));
     }
 
     private <T> ResponseEntity<ApiResponse<T>> ok(String message, T data) {

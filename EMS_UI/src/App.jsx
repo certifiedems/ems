@@ -37,6 +37,7 @@ import AdminExamsPage from './pages/admin/AdminExamsPage'
 import AdminBookingWindowsPage from './pages/admin/AdminBookingWindowsPage'
 import AdminQuestionsPage from './pages/admin/AdminQuestionsPage'
 import AdminViolationsPage from './pages/admin/AdminViolationsPage'
+import AdminAuditLogPage from './pages/admin/AdminAuditLogPage'
 import AdminPaymentsPage from './pages/admin/AdminPaymentsPage'
 import ExamReportPageEnhanced from './pages/admin/ExamReportPageEnhanced'
 
@@ -125,6 +126,7 @@ function App() {
                   <Route path="admin/questions" element={<AdminQuestionsPage />} />
                   <Route path="admin/payments" element={<AdminPaymentsPage />} />
                   <Route path="admin/violations" element={<AdminViolationsPage />} />
+                  <Route path="admin/audit-log" element={<AdminAuditLogPage />} />
                   <Route path="admin/exam-reports" element={<ExamReportPageEnhanced />} />
                   <Route path="admin/reports" element={<ReportPage />} />
                   <Route path="profile" element={<ProfilePage />} />

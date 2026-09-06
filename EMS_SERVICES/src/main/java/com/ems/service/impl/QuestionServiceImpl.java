@@ -21,6 +21,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.QuestionUpsertRequest;
 import com.ems.dto.response.BulkQuestionDeleteResponse;
 import com.ems.dto.response.BulkQuestionUploadResponse;
@@ -33,6 +36,7 @@ import com.ems.enums.QuestionType;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.QuestionRepository;
+import com.ems.service.AuditService;
 import com.ems.service.QuestionService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -54,6 +58,7 @@ public class QuestionServiceImpl implements QuestionService {
 
 	private final QuestionRepository questionRepository;
 	private final ObjectMapper objectMapper;
+	private final AuditService auditService;
 
 	@Override
 	@CacheEvict(cacheNames = { "questionById", "questionSearch", "reports" }, allEntries = true)
@@ -65,6 +70,13 @@ public class QuestionServiceImpl implements QuestionService {
 
 		Question savedQuestion = questionRepository.save(toEntity(request, null));
 		log.info("Question created: code={}", savedQuestion.getQuestionCode());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetType("QUESTION")
+				.targetId(savedQuestion.getQuestionCode())
+				.description("Created question " + savedQuestion.getQuestionCode())
+				.build());
 		return toResponse(savedQuestion);
 	}
 
@@ -92,6 +104,13 @@ public class QuestionServiceImpl implements QuestionService {
 
 		Question savedQuestion = questionRepository.save(toEntity(request, existingQuestion));
 		log.info("Question updated: id={}, code={}", savedQuestion.getId(), savedQuestion.getQuestionCode());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetType("QUESTION")
+				.targetId(savedQuestion.getQuestionCode())
+				.description("Updated question " + savedQuestion.getQuestionCode())
+				.build());
 		return toResponse(savedQuestion);
 	}
 
@@ -102,6 +121,13 @@ public class QuestionServiceImpl implements QuestionService {
 				.orElseThrow(() -> new ResourceNotFoundException("Question not found"));
 		questionRepository.delete(existingQuestion);
 		log.info("Question deleted: id={}, code={}", existingQuestion.getId(), existingQuestion.getQuestionCode());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetType("QUESTION")
+				.targetId(existingQuestion.getQuestionCode())
+				.description("Deleted question " + existingQuestion.getQuestionCode())
+				.build());
 	}
 
 	@Override
@@ -122,6 +148,13 @@ public class QuestionServiceImpl implements QuestionService {
 
 		log.info("Bulk question delete: requested={}, deleted={}, failed={}",
 				questionIds.size(), deletedCount, errors.size());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetType("QUESTION")
+				.description("Bulk deleted questions: requested=" + questionIds.size()
+						+ ", deleted=" + deletedCount + ", failed=" + errors.size())
+				.build());
 		return new BulkQuestionDeleteResponse(questionIds.size(), deletedCount, errors.size(), errors);
 	}
 
@@ -194,6 +227,17 @@ public class QuestionServiceImpl implements QuestionService {
 		} catch (IOException ex) {
 			throw new BusinessException("Failed to read bulk upload file", HttpStatus.BAD_REQUEST);
 		}
+
+		// One summary row for the batch as a whole; each imported/updated question
+		// also logged its own ADMIN_ACTION above via create()/update(), so a
+		// specific bad row within a batch is still traceable on its own.
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.ADMIN_ACTION)
+				.outcome(errors.isEmpty() ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
+				.targetType("QUESTION")
+				.description("Bulk uploaded questions: totalRows=" + totalRows
+						+ ", imported=" + importedRows + ", failed=" + errors.size())
+				.build());
 
 		return new BulkQuestionUploadResponse(totalRows, importedRows, errors.size(), errors);
 	}

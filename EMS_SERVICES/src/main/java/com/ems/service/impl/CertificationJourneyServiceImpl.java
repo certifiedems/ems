@@ -10,6 +10,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.CertificationApplicationRequest;
 import com.ems.dto.request.CertificationCompletionRequest;
 import com.ems.dto.response.CertificationApplicationResponse;
@@ -31,6 +34,7 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.CertificationHistoryRepository;
 import com.ems.repository.CertificationRepository;
 import com.ems.repository.UserRepository;
+import com.ems.service.AuditService;
 import com.ems.service.CertificationJourneyService;
 
 import lombok.RequiredArgsConstructor;
@@ -52,6 +56,7 @@ public class CertificationJourneyServiceImpl implements CertificationJourneyServ
     private final CertificationRepository certificationRepository;
     private final CertificationApplicationRepository certificationApplicationRepository;
     private final CertificationHistoryRepository certificationHistoryRepository;
+    private final AuditService auditService;
 
     @Override
     @Transactional(readOnly = true)
@@ -108,6 +113,15 @@ public class CertificationJourneyServiceImpl implements CertificationJourneyServ
 	}
 
 	CertificationApplication savedApplication = certificationApplicationRepository.save(application);
+	auditService.record(AuditEvent.builder()
+		.eventType(AuditEventType.ADMIN_ACTION)
+		.outcome(AuditOutcome.SUCCESS)
+		.targetUserId(savedApplication.getUser().getUserId())
+		.targetType("CERTIFICATION_APPLICATION")
+		.targetId(String.valueOf(applicationId))
+		.description("Marked application #" + applicationId + " as "
+			+ savedApplication.getApplicationStatus())
+		.build());
 	return toApplicationResponse(savedApplication);
     }
 

@@ -34,6 +34,7 @@ import com.ems.repository.CertificateRepository;
 import com.ems.repository.CertificationRepository;
 import com.ems.repository.ExamAttemptRepository;
 import com.ems.repository.UserRepository;
+import com.ems.service.AuditService;
 import com.ems.service.CertificateFileContent;
 import com.ems.service.CertificatePdfGeneratorService;
 import com.ems.service.CertificateTemplate;
@@ -59,6 +60,8 @@ class CertificateServiceImplTest {
     private ExamAttemptRepository examAttemptRepository;
     @Mock
     private UserRepository userRepository;
+    @Mock
+    private AuditService auditService;
 
     @TempDir
     Path storageDirectory;
@@ -73,7 +76,8 @@ class CertificateServiceImplTest {
                 certificationRepository,
                 examAttemptRepository,
                 userRepository,
-                new PdfBoxCertificatePdfGeneratorService());
+                new PdfBoxCertificatePdfGeneratorService(),
+                auditService);
         ReflectionTestUtils.setField(service, "certificateStorageDirectory", storageDirectory.toString());
         ReflectionTestUtils.setField(service, "verificationBaseUrl",
                 "http://localhost:8080/api/certificates/verify");

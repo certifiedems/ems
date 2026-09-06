@@ -20,6 +20,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.ExamProgressSaveRequest;
 import com.ems.dto.request.ExamStartRequest;
 import com.ems.dto.request.ExamWorkflowApplicationRequest;
@@ -57,6 +60,7 @@ import com.ems.repository.ExamRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.QuestionRepository;
 import com.ems.repository.UserRepository;
+import com.ems.service.AuditService;
 import com.ems.service.CertificationJourneyService;
 import com.ems.service.ExamWorkflowService;
 import com.ems.service.PaymentService;
@@ -101,6 +105,7 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	private final ExamSessionRepository examSessionRepository;
 	private final PaymentService paymentService;
 	private final ObjectMapper objectMapper;
+	private final AuditService auditService;
 
 	@Override
 	@Transactional(readOnly = true)
@@ -389,6 +394,17 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 
 		log.info("Exam started applicationId={} sessionToken={} questionCount={}",
 				applicationId, savedSession.getSessionToken(), selectedIds.size());
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.EXAM_START)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(email)
+				.actorUserId(application.getUser().getUserId())
+				.targetUserId(application.getUser().getUserId())
+				.targetType("EXAM_SESSION")
+				.targetId(String.valueOf(savedSession.getId()))
+				.description("Started exam " + application.getExam().getExamCode()
+						+ " (application #" + applicationId + ")")
+				.build());
 
 		return new ExamStartResponse(
 				application.getId(),

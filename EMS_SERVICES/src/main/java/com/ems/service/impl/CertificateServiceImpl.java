@@ -28,6 +28,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.ems.audit.AuditEvent;
+import com.ems.audit.AuditEventType;
+import com.ems.audit.AuditOutcome;
 import com.ems.dto.response.CertificateResponse;
 import com.ems.dto.response.CertificateVerificationResponse;
 import com.ems.entity.Certificate;
@@ -44,6 +47,7 @@ import com.ems.repository.CertificateRepository;
 import com.ems.repository.CertificationRepository;
 import com.ems.repository.ExamAttemptRepository;
 import com.ems.repository.UserRepository;
+import com.ems.service.AuditService;
 import com.ems.service.CertificateFileContent;
 import com.ems.service.CertificatePdfGeneratorService;
 import com.ems.service.CertificateService;
@@ -70,6 +74,7 @@ public class CertificateServiceImpl implements CertificateService {
 	private final ExamAttemptRepository examAttemptRepository;
 	private final UserRepository userRepository;
 	private final CertificatePdfGeneratorService certificatePdfGeneratorService;
+	private final AuditService auditService;
 
 	@Value("${app.storage.certificate.directory:storage/certificates}")
 	private String certificateStorageDirectory;
@@ -191,6 +196,15 @@ public class CertificateServiceImpl implements CertificateService {
 		Certificate certificate = certificateRepository
 				.findByCertificateNumberIgnoreCaseAndCertificationUserEmailIgnoreCase(certificateNumber, email)
 				.orElseThrow(() -> new ResourceNotFoundException("Certificate not found"));
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.CERTIFICATE_DOWNLOAD)
+				.outcome(AuditOutcome.SUCCESS)
+				.actorEmail(email)
+				.actorUserId(certificate.getCertification().getUser().getUserId())
+				.targetUserId(certificate.getCertification().getUser().getUserId())
+				.targetType("CERTIFICATE")
+				.targetId(certificateNumber)
+				.build());
 		return loadCertificateFile(certificate);
 	}
 
@@ -199,6 +213,14 @@ public class CertificateServiceImpl implements CertificateService {
 	public CertificateFileContent downloadCertificateForAdmin(String certificateNumber) {
 		Certificate certificate = certificateRepository.findByCertificateNumberIgnoreCase(certificateNumber)
 				.orElseThrow(() -> new ResourceNotFoundException("Certificate not found"));
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.CERTIFICATE_DOWNLOAD)
+				.outcome(AuditOutcome.SUCCESS)
+				.targetUserId(certificate.getCertification().getUser().getUserId())
+				.targetType("CERTIFICATE")
+				.targetId(certificateNumber)
+				.description("Downloaded via admin console")
+				.build());
 		return loadCertificateFile(certificate);
 	}
 
@@ -415,12 +437,28 @@ public class CertificateServiceImpl implements CertificateService {
 			}
 		}
 
+		long generatedCount = generated.stream().filter(m -> "generated".equals(m.get("status"))).count();
+		long failedCount = generated.stream().filter(m -> "failed".equals(m.get("status"))).count();
+
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("userId", user.getUserId());
 		result.put("email", user.getEmail());
-		result.put("generatedCount", (long) generated.stream().filter(m -> "generated".equals(m.get("status"))).count());
-		result.put("failedCount", (long) generated.stream().filter(m -> "failed".equals(m.get("status"))).count());
+		result.put("generatedCount", generatedCount);
+		result.put("failedCount", failedCount);
 		result.put("details", generated);
+
+		// Self-service, not an admin action: this endpoint takes no role check and
+		// only ever touches the caller's own certificates (see the userRepository
+		// lookup above), so the actor and target are the same person.
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.CERTIFICATE_MAINTENANCE)
+				.outcome(failedCount == 0 ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
+				.actorEmail(email)
+				.actorUserId(user.getUserId())
+				.targetUserId(user.getUserId())
+				.targetType("CERTIFICATE")
+				.description("Generated missing certificates: generated=" + generatedCount + ", failed=" + failedCount)
+				.build());
 		return result;
 	}
 
@@ -461,12 +499,25 @@ public class CertificateServiceImpl implements CertificateService {
 			}
 		}
 
+		long regeneratedCount = regenerated.stream().filter(m -> "regenerated".equals(m.get("status"))).count();
+		long failedCount = regenerated.stream().filter(m -> "failed".equals(m.get("status"))).count();
+
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("userId", user.getUserId());
 		result.put("email", user.getEmail());
-		result.put("regeneratedCount", (long) regenerated.stream().filter(m -> "regenerated".equals(m.get("status"))).count());
-		result.put("failedCount", (long) regenerated.stream().filter(m -> "failed".equals(m.get("status"))).count());
+		result.put("regeneratedCount", regeneratedCount);
+		result.put("failedCount", failedCount);
 		result.put("details", regenerated);
+
+		auditService.record(AuditEvent.builder()
+				.eventType(AuditEventType.CERTIFICATE_MAINTENANCE)
+				.outcome(failedCount == 0 ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
+				.actorEmail(email)
+				.actorUserId(user.getUserId())
+				.targetUserId(user.getUserId())
+				.targetType("CERTIFICATE")
+				.description("Regenerated certificate PDFs: regenerated=" + regeneratedCount + ", failed=" + failedCount)
+				.build());
 		return result;
 	}
 
