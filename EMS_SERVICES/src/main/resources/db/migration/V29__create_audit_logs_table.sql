@@ -3,6 +3,35 @@
 -- Purpose: give support/admin a record to answer "who reset this password" /
 -- "who locked this account" / "did this candidate's exam actually get submitted".
 
+-- V1 already created an audit_logs table with a completely different shape
+-- (event_timestamp/performed_by/created_by) that no entity or query ever used.
+-- CREATE TABLE IF NOT EXISTS would silently keep that table and the
+-- occurred_at index below would then fail on a column that does not exist, so
+-- the name has to be cleared first. A legacy table that somehow holds rows is
+-- set aside rather than dropped; its indexes and identity sequence are renamed
+-- with it so the names below are free.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'audit_logs'
+          AND column_name = 'event_timestamp'
+    ) THEN
+        IF EXISTS (SELECT 1 FROM audit_logs) THEN
+            ALTER TABLE audit_logs RENAME TO audit_logs_v1_legacy;
+            ALTER INDEX IF EXISTS audit_logs_pkey RENAME TO audit_logs_v1_legacy_pkey;
+            ALTER INDEX IF EXISTS idx_audit_logs_event_time
+                RENAME TO idx_audit_logs_v1_legacy_event_time;
+            ALTER SEQUENCE IF EXISTS audit_logs_id_seq
+                RENAME TO audit_logs_v1_legacy_id_seq;
+        ELSE
+            DROP TABLE audit_logs;
+        END IF;
+    END IF;
+END $$;
+
 -- Deliberately has no foreign keys to users: a failed login names an email
 -- that may never have belonged to an account, and a row must outlive the
 -- user it is about if that user is ever deleted.
