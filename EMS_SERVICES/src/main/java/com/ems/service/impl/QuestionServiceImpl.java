@@ -16,9 +16,12 @@ import java.util.stream.Collectors;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.ems.audit.AuditEvent;
@@ -65,6 +68,7 @@ public class QuestionServiceImpl implements QuestionService {
 	private final QuestionRepository questionRepository;
 	private final ObjectMapper objectMapper;
 	private final AuditService auditService;
+	private final TransactionTemplate transactionTemplate;
 
 	@Override
 	@CacheEvict(cacheNames = { "questionById", "questionSearch", "reports" }, allEntries = true)
@@ -188,7 +192,14 @@ public class QuestionServiceImpl implements QuestionService {
 		return "%" + value.trim().toLowerCase(Locale.ROOT) + "%";
 	}
 
+	/**
+	 * Runs outside a transaction and commits each row in its own. In one shared
+	 * transaction, a single insert the database refused marked the whole batch
+	 * rollback-only: every row was lost and the commit failed the request with a
+	 * bare 500 instead of reporting the row.
+	 */
 	@Override
+	@Transactional(propagation = Propagation.NOT_SUPPORTED)
 	@CacheEvict(cacheNames = { "questionById", "questionSearch", "reports" }, allEntries = true)
 	public BulkQuestionUploadResponse bulkUpload(MultipartFile file) {
 		if (file == null || file.isEmpty()) {
@@ -212,6 +223,7 @@ public class QuestionServiceImpl implements QuestionService {
 
 		for (QuestionRow row : rows) {
 			String questionCode = row.get(Column.QUES_ID).toUpperCase(Locale.ROOT);
+			String rowReference = questionCode.isEmpty() ? row.label() : row.label() + " (" + questionCode + ")";
 			try {
 				String firstRow = questionCode.isEmpty()
 						? null
@@ -221,23 +233,16 @@ public class QuestionServiceImpl implements QuestionService {
 				}
 
 				QuestionUpsertRequest request = parseBulkRow(row);
-				Question existingQuestion = questionRepository.findByQuestionCodeIgnoreCase(request.questionCode())
-						.orElse(null);
-				if (existingQuestion == null) {
-					create(request);
+				if (Boolean.TRUE.equals(transactionTemplate.execute(status -> importRow(request)))) {
 					createdRows++;
-				} else if (existingQuestion.getCertificationLevel() != request.certificationLevel()) {
-					// quesID is unique across all levels, so updating here would quietly
-					// move an existing question (and its exam history) to another level.
-					throw new BusinessException("quesID already exists for level " + existingQuestion.getCertificationLevel()
-							+ "; use a different quesID for this " + request.certificationLevel() + " question");
 				} else {
-					update(existingQuestion.getId(), request);
 					updatedRows++;
 				}
-			} catch (Exception ex) {
-				String rowReference = questionCode.isEmpty() ? row.label() : row.label() + " (" + questionCode + ")";
+			} catch (BusinessException ex) {
 				errors.add(rowReference + ": " + ex.getMessage());
+			} catch (RuntimeException ex) {
+				log.warn("Bulk upload row failed: {}", rowReference, ex);
+				errors.add(rowReference + ": " + describeFailure(ex));
 			}
 		}
 
@@ -254,6 +259,32 @@ public class QuestionServiceImpl implements QuestionService {
 
 		return new BulkQuestionUploadResponse(
 				rows.size(), createdRows + updatedRows, createdRows, updatedRows, errors.size(), errors);
+	}
+
+	/** Creates or updates one uploaded question; returns true when it was created. */
+	private boolean importRow(QuestionUpsertRequest request) {
+		Question existingQuestion = questionRepository.findByQuestionCodeIgnoreCase(request.questionCode())
+				.orElse(null);
+		if (existingQuestion == null) {
+			create(request);
+			return true;
+		}
+		if (existingQuestion.getCertificationLevel() != request.certificationLevel()) {
+			// quesID is unique across all levels, so updating here would quietly
+			// move an existing question (and its exam history) to another level.
+			throw new BusinessException("quesID already exists for level " + existingQuestion.getCertificationLevel()
+					+ "; use a different quesID for this " + request.certificationLevel() + " question");
+		}
+		update(existingQuestion.getId(), request);
+		return false;
+	}
+
+	/** The database's own reason (first line only), e.g. which constraint a row broke. */
+	private String describeFailure(RuntimeException ex) {
+		Throwable cause = NestedExceptionUtils.getMostSpecificCause(ex);
+		return cause.getMessage() == null
+				? cause.getClass().getSimpleName()
+				: cause.getMessage().lines().findFirst().orElse(cause.getClass().getSimpleName());
 	}
 
 	private QuestionUpsertRequest parseBulkRow(QuestionRow row) {

@@ -21,7 +21,6 @@ import org.apache.poi.EncryptedDocumentException;
 import org.apache.poi.poifs.filesystem.FileMagic;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.DataFormatter;
-import org.apache.poi.ss.usermodel.FormulaEvaluator;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -29,6 +28,8 @@ import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.web.multipart.MultipartFile;
 
 import com.ems.exception.BusinessException;
+
+import lombok.extern.slf4j.Slf4j;
 
 /**
  * Reads a question bulk-upload file (.xlsx, .xls or .csv) into rows keyed by
@@ -38,6 +39,7 @@ import com.ems.exception.BusinessException;
  * matter. A file without a header row is read in the order the columns are
  * declared below.</p>
  */
+@Slf4j
 public final class QuestionBulkFileReader {
 
     public enum Column {
@@ -127,8 +129,10 @@ public final class QuestionBulkFileReader {
 
     private static List<QuestionRow> readWorkbook(InputStream in) throws IOException {
         try (Workbook workbook = WorkbookFactory.create(in)) {
+            // Formula cells are read from the result Excel saved with the file rather
+            // than re-evaluated here, where functions POI does not implement would fail.
             DataFormatter formatter = new DataFormatter(Locale.US);
-            FormulaEvaluator evaluator = workbook.getCreationHelper().createFormulaEvaluator();
+            formatter.setUseCachedValuesForFormulaCells(true);
 
             Map<String, List<RawRow>> rowsBySheet = new LinkedHashMap<>();
             for (int index = 0; index < workbook.getNumberOfSheets(); index++) {
@@ -136,7 +140,7 @@ public final class QuestionBulkFileReader {
                     continue;
                 }
                 Sheet sheet = workbook.getSheetAt(index);
-                rowsBySheet.put(sheet.getSheetName(), readSheet(sheet, formatter, evaluator));
+                rowsBySheet.put(sheet.getSheetName(), readSheet(sheet, formatter));
             }
 
             // Every sheet that starts with a quesID header is imported, so a notes
@@ -162,17 +166,26 @@ public final class QuestionBulkFileReader {
             return questionRows;
         } catch (EncryptedDocumentException ex) {
             throw new BusinessException("Password-protected workbooks are not supported; remove the password and upload again");
+        } catch (BusinessException ex) {
+            throw ex;
+        } catch (RuntimeException ex) {
+            // POI reports most unreadable files (a zip that is not a workbook, an
+            // Apple Numbers export, a damaged sheet) as unchecked exceptions, which
+            // would otherwise reach the caller as a bare 500.
+            log.warn("Bulk upload workbook could not be read", ex);
+            throw new BusinessException("The uploaded file could not be read as an Excel workbook: "
+                    + ex.getMessage() + ". Save it as .xlsx and upload again");
         }
     }
 
-    private static List<RawRow> readSheet(Sheet sheet, DataFormatter formatter, FormulaEvaluator evaluator) {
+    private static List<RawRow> readSheet(Sheet sheet, DataFormatter formatter) {
         List<RawRow> rows = new ArrayList<>();
         for (Row row : sheet) {
             List<String> cells = new ArrayList<>();
             for (int index = 0; index < row.getLastCellNum(); index++) {
                 Cell cell = row.getCell(index);
                 // Read as Excel displays it, so a marks cell of 1 is "1" rather than "1.0".
-                cells.add(cell == null ? "" : clean(formatter.formatCellValue(cell, evaluator)));
+                cells.add(cell == null ? "" : clean(formatter.formatCellValue(cell)));
             }
             rows.add(new RawRow(row.getRowNum() + 1, cells));
         }

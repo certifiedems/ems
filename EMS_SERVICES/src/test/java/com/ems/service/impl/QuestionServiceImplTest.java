@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -18,7 +19,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
+import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -31,6 +35,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.ems.dto.response.BulkQuestionUploadResponse;
 import com.ems.entity.Question;
@@ -44,6 +50,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 /**
  * Covers bulk upload of the question sheet admins maintain in Excel: quesID such
  * as Q008M (severity marker last), with the level in its own column.
+ *
+ * <p>Transactions are stubbed out here; {@link QuestionBulkUploadTransactionTest}
+ * runs the upload against a real database.</p>
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -52,6 +61,10 @@ class QuestionServiceImplTest {
     private static final String[] HEADER = {
             "quesID", "question", "option1", "option2", "option3", "option4",
             "answer", "severity", "category", "marks", "Level" };
+
+    /** A formula cell together with the result Excel saved for it. */
+    private record Formula(String formula, String savedValue) {
+    }
 
     @Mock
     private QuestionRepository questionRepository;
@@ -66,7 +79,8 @@ class QuestionServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        questionService = new QuestionServiceImpl(questionRepository, new ObjectMapper(), auditService);
+        questionService = new QuestionServiceImpl(questionRepository, new ObjectMapper(), auditService,
+                new TransactionTemplate(mock(PlatformTransactionManager.class)));
 
         when(questionRepository.existsByQuestionCodeIgnoreCase(anyString()))
                 .thenAnswer(inv -> savedByCode.containsKey(inv.<String>getArgument(0).toUpperCase(Locale.ROOT)));
@@ -180,6 +194,37 @@ class QuestionServiceImplTest {
     }
 
     @Test
+    @DisplayName("formula cells are read from the value Excel saved, not re-evaluated")
+    void readsFormulaCellsFromTheirSavedValue() throws IOException {
+        Object[] row = row("Q001L", "LOW", "L1");
+        // Evaluates to Q009L, but the file says Q001L. POI cannot evaluate every
+        // function Excel has, so the saved result is the value to trust.
+        row[0] = new Formula("\"Q00\"&\"9L\"", "Q001L");
+
+        BulkQuestionUploadResponse response = questionService.bulkUpload(xlsx(HEADER, row));
+
+        assertThat(response.errors()).isEmpty();
+        assertThat(savedByCode).containsOnlyKeys("Q001L");
+    }
+
+    @Test
+    @DisplayName("a zip that is not a workbook (such as an Apple Numbers file) is rejected as a bad request")
+    void rejectsZipThatIsNotAWorkbook() throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (ZipOutputStream zip = new ZipOutputStream(out)) {
+            zip.putNextEntry(new ZipEntry("Index/Document.iwa"));
+            zip.write(new byte[] { 1, 2, 3 });
+            zip.closeEntry();
+        }
+        MockMultipartFile file = new MockMultipartFile(
+                "file", "questions.xlsx", "application/octet-stream", out.toByteArray());
+
+        assertThatThrownBy(() -> questionService.bulkUpload(file))
+                .isInstanceOf(BusinessException.class);
+        verify(questionRepository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("a sheet missing required columns is rejected before any row is saved")
     void rejectsSheetMissingRequiredColumns() throws IOException {
         MockMultipartFile file = xlsx(
@@ -222,10 +267,14 @@ class QuestionServiceImplTest {
                 Row row = sheet.createRow(rowIndex);
                 Object[] values = sheetRows.get(rowIndex);
                 for (int col = 0; col < values.length; col++) {
-                    if (values[col] instanceof Number number) {
-                        row.createCell(col).setCellValue(number.doubleValue());
+                    Cell cell = row.createCell(col);
+                    if (values[col] instanceof Formula formula) {
+                        cell.setCellFormula(formula.formula());
+                        cell.setCellValue(formula.savedValue());
+                    } else if (values[col] instanceof Number number) {
+                        cell.setCellValue(number.doubleValue());
                     } else {
-                        row.createCell(col).setCellValue(String.valueOf(values[col]));
+                        cell.setCellValue(String.valueOf(values[col]));
                     }
                 }
             }
