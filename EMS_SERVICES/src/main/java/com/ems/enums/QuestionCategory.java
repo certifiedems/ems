@@ -4,6 +4,7 @@ public enum QuestionCategory {
     TECHNICAL,
     FUNCTIONAL,
     COMPLIANCE,
+    SAFETY,
     GENERAL;
 
     public String databaseValue() {
@@ -11,6 +12,7 @@ public enum QuestionCategory {
             case TECHNICAL -> "Technical";
             case FUNCTIONAL -> "Functional";
             case COMPLIANCE -> "Compliance";
+            case SAFETY -> "Safety";
             case GENERAL -> "General";
         };
     }

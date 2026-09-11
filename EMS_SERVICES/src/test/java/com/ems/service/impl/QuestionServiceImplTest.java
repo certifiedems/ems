@@ -157,6 +157,18 @@ class QuestionServiceImplTest {
     }
 
     @Test
+    @DisplayName("SAFETY is an accepted category and is stored as Safety")
+    void importsSafetyCategory() {
+        String csv = String.join(",", HEADER) + "\n"
+                + "Q069M,Which device protects against earth leakage?,MCB,RCCB,Fuse,Isolator,RCCB,MEDIUM,SAFETY,1,L1\n";
+
+        BulkQuestionUploadResponse response = questionService.bulkUpload(csv("questions.csv", csv));
+
+        assertThat(response.errors()).isEmpty();
+        assertThat(savedByCode.get("Q069M").getQuestionCategory()).isEqualTo("Safety");
+    }
+
+    @Test
     @DisplayName("each bad row is reported against its sheet row, and the good rows still import")
     void reportsBadRowsBySheetRowAndImportsTheRest() throws IOException {
         MockMultipartFile file = xlsx(HEADER,

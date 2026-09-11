@@ -15,7 +15,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFileRounded'
 import DownloadIcon from '@mui/icons-material/DownloadRounded'
 
 const LEVELS = ['L1', 'L2', 'L3']
-const CATEGORIES = ['TECHNICAL', 'FUNCTIONAL', 'COMPLIANCE', 'GENERAL']
+const CATEGORIES = ['TECHNICAL', 'FUNCTIONAL', 'COMPLIANCE', 'SAFETY', 'GENERAL']
 const TYPES = ['SINGLE_CHOICE', 'MULTIPLE_CHOICE']
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH']
 
