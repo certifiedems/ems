@@ -4,7 +4,7 @@ import {
   Box, Paper, Table, TableBody, TableCell, TableContainer, TableHead,
   TableRow, Button, Dialog, DialogTitle, DialogContent, DialogActions,
   TextField, MenuItem, Grid, Skeleton, Snackbar, Alert, Stack,
-  Checkbox, FormControlLabel, IconButton, Chip
+  Checkbox, FormControlLabel, IconButton, Chip, Typography
 } from '@mui/material'
 import { adminAPI } from '../../api/adminAPI'
 import PageHeader from '../../components/common/PageHeader'
@@ -18,6 +18,9 @@ const LEVELS = ['L1', 'L2', 'L3']
 const CATEGORIES = ['TECHNICAL', 'FUNCTIONAL', 'COMPLIANCE', 'GENERAL']
 const TYPES = ['SINGLE_CHOICE', 'MULTIPLE_CHOICE']
 const SEVERITIES = ['LOW', 'MEDIUM', 'HIGH']
+
+// Same columns the bulk upload reads, so an export can be edited and uploaded back.
+const QUESTION_FILE_COLUMNS = ['quesID', 'question', 'option1', 'option2', 'option3', 'option4', 'answer', 'severity', 'category', 'marks', 'Level']
 
 const emptyForm = {
   questionCode: '',
@@ -41,6 +44,8 @@ const AdminQuestionsPage = () => {
   const [selectedIds, setSelectedIds] = useState([])
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadResult, setUploadResult] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -155,8 +160,7 @@ const AdminQuestionsPage = () => {
       return
     }
 
-    const header = ['quesID', 'question', 'option1', 'option2', 'option3', 'option4', 'answer', 'severity', 'category', 'marks']
-    const lines = [header.join(',')]
+    const lines = [QUESTION_FILE_COLUMNS.join(',')]
     rows.forEach((q) => {
       const options = [...(q.options || [])]
       while (options.length < 4) options.push('')
@@ -167,7 +171,8 @@ const AdminQuestionsPage = () => {
         (q.correctOptions || []).join('|'),
         q.severity,
         q.questionCategory,
-        q.marks
+        q.marks,
+        q.certificationLevel
       ].map(csvEscape).join(','))
     })
 
@@ -183,16 +188,20 @@ const AdminQuestionsPage = () => {
   }
 
   const handleBulkUpload = async (e) => {
-    const file = e.target.files?.[0]
+    const input = e.target
+    const file = input.files?.[0]
     if (!file) return
+    setUploading(true)
     try {
-      await adminAPI.bulkUploadQuestions(file)
-      setFeedback({ severity: 'success', msg: 'Bulk upload complete' })
-      load()
+      const res = await adminAPI.bulkUploadQuestions(file)
+      const result = res.data.data
+      setUploadResult(result)
+      if (result.importedRows > 0) load()
     } catch (err) {
       setFeedback({ severity: 'error', msg: err.response?.data?.message || 'Bulk upload failed' })
     } finally {
-      e.target.value = ''
+      setUploading(false)
+      input.value = ''
     }
   }
 
@@ -284,9 +293,9 @@ const AdminQuestionsPage = () => {
             >
               Export{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
             </Button>
-            <Button variant="outlined" component="label" startIcon={<UploadFileIcon />}>
-              Bulk upload
-              <input type="file" hidden accept=".csv,.xlsx,.json" onChange={handleBulkUpload} />
+            <Button variant="outlined" component="label" startIcon={<UploadFileIcon />} disabled={uploading}>
+              {uploading ? 'Uploading…' : 'Bulk upload'}
+              <input type="file" hidden accept=".xlsx,.xls,.csv" onChange={handleBulkUpload} />
             </Button>
             <Button variant="contained" startIcon={<AddIcon />} onClick={() => { setForm(emptyForm); setOpen(true) }}>
               New question
@@ -304,7 +313,13 @@ const AdminQuestionsPage = () => {
         <DialogContent dividers>
           <Grid container spacing={2}>
             <Grid item xs={12} sm={6}>
-              <TextField fullWidth label="Question Code" value={form.questionCode} onChange={(e) => setField('questionCode', e.target.value)} />
+              <TextField
+                fullWidth
+                label="Question Code"
+                value={form.questionCode}
+                onChange={(e) => setField('questionCode', e.target.value)}
+                helperText="e.g. Q001L — last letter is the severity (L/M/H)"
+              />
             </Grid>
             <Grid item xs={12} sm={6}>
               <TextField fullWidth select label="Level" value={form.certificationLevel} onChange={(e) => setField('certificationLevel', e.target.value)}>
@@ -368,6 +383,48 @@ const AdminQuestionsPage = () => {
           <Button color="error" variant="contained" onClick={handleBulkDelete} disabled={bulkDeleting}>
             {bulkDeleting ? 'Deleting…' : 'Delete'}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={Boolean(uploadResult)} onClose={() => setUploadResult(null)} maxWidth="md" fullWidth>
+        <DialogTitle>Bulk upload result</DialogTitle>
+        <DialogContent dividers>
+          {uploadResult && (
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                <Chip label={`Rows read: ${uploadResult.totalRows}`} />
+                <Chip color="success" variant="outlined" label={`Created: ${uploadResult.createdRows}`} />
+                <Chip color="info" variant="outlined" label={`Updated: ${uploadResult.updatedRows}`} />
+                <Chip
+                  color={uploadResult.failedRows > 0 ? 'error' : 'default'}
+                  variant="outlined"
+                  label={`Failed: ${uploadResult.failedRows}`}
+                />
+              </Stack>
+              {uploadResult.failedRows > 0 ? (
+                <>
+                  <Alert severity={uploadResult.importedRows > 0 ? 'warning' : 'error'}>
+                    Fix the rows below and upload the file again — rows that already imported are updated, not duplicated.
+                  </Alert>
+                  <Box component="ul" sx={{ m: 0, pl: 2.5, maxHeight: 320, overflowY: 'auto' }}>
+                    {uploadResult.errors.map((error) => (
+                      <Typography component="li" variant="body2" key={error} sx={{ py: 0.25 }}>
+                        {error}
+                      </Typography>
+                    ))}
+                  </Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Expected columns: {QUESTION_FILE_COLUMNS.join(', ')}
+                  </Typography>
+                </>
+              ) : (
+                <Alert severity="success">All {uploadResult.importedRows} question(s) imported.</Alert>
+              )}
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setUploadResult(null)}>Close</Button>
         </DialogActions>
       </Dialog>
 

@@ -1,0 +1,30 @@
+quesID,question,option1,option2,option3,option4,answer,severity,category,marks
+L1L001,What does Ohm's Law state?,V = IR,V = I/R,V = I+R,V = I-R,V = IR,LOW,TECHNICAL,1
+L1L002,In Ohm's Law V=IR what does 'I' represent?,Voltage,Current,Resistance,Impedance,Current,LOW,TECHNICAL,1
+L1L003,In Ohm's Law V=IR what does 'R' represent?,Voltage,Current,Resistance,Power,Resistance,LOW,TECHNICAL,1
+L1L004,What is the SI unit of electrical resistance?,Ampere,Volt,Ohm,Watt,Ohm,LOW,TECHNICAL,1
+L1L005,What is the SI unit of electric current?,Volt,Ampere,Ohm,Watt,Ampere,LOW,TECHNICAL,1
+L1M001,A 12 V supply drives 3 A through a resistor. What is its resistance?,2 Ohm,4 Ohm,6 Ohm,36 Ohm,4 Ohm,MEDIUM,TECHNICAL,2
+L1M002,What is the total resistance of two 10 Ohm resistors in parallel?,5 Ohm,10 Ohm,20 Ohm,0.1 Ohm,5 Ohm,MEDIUM,TECHNICAL,2
+L1M003,Which formula gives electrical power?,P = VI,P = V/I,P = I/V,P = V+I,P = VI,MEDIUM,TECHNICAL,2
+L1H001,A 240 V heater draws 10 A. What energy does it use in 2 hours?,2.4 kWh,4.8 kWh,24 kWh,48 kWh,4.8 kWh,HIGH,TECHNICAL,3
+L1H002,Which statements about series circuits are correct?,Current is the same through all elements,Voltage divides across elements,Total resistance is the sum of resistances,Voltage is the same across all elements,Current is the same through all elements|Voltage divides across elements|Total resistance is the sum of resistances,HIGH,TECHNICAL,3
+L1H003,Three 6 Ohm resistors are connected in series. What is the total resistance?,2 Ohm,6 Ohm,18 Ohm,12 Ohm,18 Ohm,HIGH,TECHNICAL,3
+L2L001,What is the SI unit of capacitance?,Farad,Henry,Tesla,Weber,Farad,LOW,TECHNICAL,1
+L2L002,What is the SI unit of inductance?,Farad,Henry,Ohm,Siemens,Henry,LOW,TECHNICAL,1
+L2L003,What is the standard frequency of the Indian power grid?,50 Hz,60 Hz,100 Hz,25 Hz,50 Hz,LOW,GENERAL,1
+L2M001,What is the RMS value of a sine wave with 100 V peak?,70.7 V,100 V,141.4 V,50 V,70.7 V,MEDIUM,TECHNICAL,2
+L2M002,In a purely capacitive AC circuit what is the phase relationship?,Current leads voltage by 90 degrees,Current lags voltage by 90 degrees,Current is in phase with voltage,Current leads voltage by 45 degrees,Current leads voltage by 90 degrees,MEDIUM,TECHNICAL,2
+L2M003,What does a power factor of unity indicate?,Purely resistive load,Purely inductive load,Purely capacitive load,Open circuit,Purely resistive load,MEDIUM,FUNCTIONAL,2
+L2H001,A transformer has 400 primary turns and 100 secondary turns. If primary voltage is 240 V what is the secondary voltage?,60 V,120 V,480 V,960 V,60 V,HIGH,TECHNICAL,3
+L2H002,Which factors affect the impedance of a series RLC circuit?,Resistance,Inductive reactance,Capacitive reactance,Conductor colour,Resistance|Inductive reactance|Capacitive reactance,HIGH,TECHNICAL,3
+L2H003,What is the resonant condition in a series RLC circuit?,Inductive reactance equals capacitive reactance,Resistance equals inductive reactance,Impedance is maximum,Current is minimum,Inductive reactance equals capacitive reactance,HIGH,TECHNICAL,3
+L3L001,What does the abbreviation MCB stand for?,Miniature Circuit Breaker,Main Control Board,Multi Circuit Bus,Motor Control Box,Miniature Circuit Breaker,LOW,TECHNICAL,1
+L3L002,What is the primary purpose of earthing?,Provide a safe path for fault current,Increase supply voltage,Improve power factor,Reduce cable cost,Provide a safe path for fault current,LOW,COMPLIANCE,1
+L3L003,In a three phase system what is the phase difference between phases?,120 degrees,90 degrees,180 degrees,60 degrees,120 degrees,LOW,TECHNICAL,1
+L3M001,In a balanced star connected system what is the relation between line and phase voltage?,Line voltage is 1.732 times phase voltage,Line voltage equals phase voltage,Phase voltage is 1.732 times line voltage,Line voltage is twice phase voltage,Line voltage is 1.732 times phase voltage,MEDIUM,TECHNICAL,2
+L3M002,What is the main function of a differential relay?,Detect internal faults in protected equipment,Regulate voltage,Improve power factor,Measure energy consumption,Detect internal faults in protected equipment,MEDIUM,TECHNICAL,2
+L3M003,Which method is commonly used to improve power factor in industrial plants?,Capacitor banks,Series reactors,Increasing cable size,Reducing supply frequency,Capacitor banks,MEDIUM,FUNCTIONAL,2
+L3H001,A three phase load draws 100 A at 415 V with power factor 0.8. What is the approximate real power?,57.5 kW,41.5 kW,71.9 kW,33.2 kW,57.5 kW,HIGH,TECHNICAL,3
+L3H002,Which protections are typically provided for a large power transformer?,Buchholz relay,Differential protection,Overcurrent protection,Colour coding,Buchholz relay|Differential protection|Overcurrent protection,HIGH,COMPLIANCE,3
+L3H003,What is the effect of an unbalanced load on a three phase four wire system?,Neutral current flows,Neutral current becomes zero,Phase voltages become equal,Frequency increases,Neutral current flows,HIGH,TECHNICAL,3

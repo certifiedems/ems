@@ -70,6 +70,9 @@ export const adminAPI = {
 		formData.append('file', file)
 		return apiClient.post('/questions/bulk-upload', formData, {
 			headers: { 'Content-Type': 'multipart/form-data' },
+			// Every row is validated and saved server-side; a sheet of a few hundred
+			// questions can outlast the default 20s timeout.
+			timeout: 120000,
 		})
 	},
 }

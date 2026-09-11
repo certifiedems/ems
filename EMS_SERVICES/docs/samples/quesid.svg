@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="660" viewBox="0 0 1000 660" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+  <rect width="1000" height="660" fill="#ffffff"/>
+  <rect x="0" y="0" width="1000" height="6" fill="#44546a"/>
+
+  <text x="40" y="62" font-size="30" font-weight="700" fill="#1a2233">quesID format</text>
+  <text x="40" y="90" font-size="15" fill="#6b7280">Question code used by bulk upload — encodes level and severity in the ID itself</text>
+  <text x="960" y="62" font-size="14" text-anchor="end" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#8b93a1">^(L[123])([LMH])\d{3,}$</text>
+
+  <!-- code segments -->
+  <rect x="330" y="140" width="124" height="104" rx="10" fill="#dbe7f6" stroke="#7ea6d8" stroke-width="2"/>
+  <rect x="462" y="140" width="72"  height="104" rx="10" fill="#fdf0cf" stroke="#e0b64d" stroke-width="2"/>
+  <rect x="542" y="140" width="176" height="104" rx="10" fill="#eceef1" stroke="#b6bcc6" stroke-width="2"/>
+  <text x="392" y="212" font-size="74" font-weight="700" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#1b4f8a">L2</text>
+  <text x="498" y="212" font-size="74" font-weight="700" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#8a6414">H</text>
+  <text x="630" y="212" font-size="74" font-weight="700" text-anchor="middle" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#4b5563">001</text>
+
+  <!-- connectors -->
+  <path d="M392 250 L392 282 L180 282 L180 316" fill="none" stroke="#7ea6d8" stroke-width="2"/>
+  <path d="M498 250 L498 316" fill="none" stroke="#e0b64d" stroke-width="2"/>
+  <path d="M630 250 L630 282 L820 282 L820 316" fill="none" stroke="#b6bcc6" stroke-width="2"/>
+
+  <!-- cards -->
+  <rect x="40"  y="316" width="280" height="148" rx="10" fill="#f7fafd" stroke="#7ea6d8" stroke-width="2"/>
+  <text x="60" y="348" font-size="13" font-weight="700" fill="#7ea6d8">PART 1</text>
+  <text x="60" y="376" font-size="19" font-weight="700" fill="#1a2233">Certification level</text>
+  <text x="60" y="406" font-size="17" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#1b4f8a">L1 · L2 · L3</text>
+  <text x="60" y="434" font-size="13" fill="#6b7280">Read from the ID — there is</text>
+  <text x="60" y="452" font-size="13" fill="#6b7280">no level column in the file.</text>
+
+  <rect x="360" y="316" width="280" height="148" rx="10" fill="#fffdf6" stroke="#e0b64d" stroke-width="2"/>
+  <text x="380" y="348" font-size="13" font-weight="700" fill="#c9a13c">PART 2</text>
+  <text x="380" y="376" font-size="19" font-weight="700" fill="#1a2233">Severity</text>
+  <text x="380" y="406" font-size="17" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#8a6414">L=LOW  M=MED  H=HIGH</text>
+  <text x="380" y="434" font-size="13" fill="#6b7280">Must agree with the severity</text>
+  <text x="380" y="452" font-size="13" fill="#6b7280">column or the row is rejected.</text>
+
+  <rect x="680" y="316" width="280" height="148" rx="10" fill="#fafbfc" stroke="#b6bcc6" stroke-width="2"/>
+  <text x="700" y="348" font-size="13" font-weight="700" fill="#9aa2ae">PART 3</text>
+  <text x="700" y="376" font-size="19" font-weight="700" fill="#1a2233">Sequence</text>
+  <text x="700" y="406" font-size="17" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#4b5563">001 · 3+ digits</text>
+  <text x="700" y="434" font-size="13" fill="#6b7280">Unique per question. Re-using</text>
+  <text x="700" y="452" font-size="13" fill="#6b7280">an ID updates that question.</text>
+
+  <!-- examples -->
+  <text x="40" y="516" font-size="15" font-weight="700" fill="#1a2233">Valid</text>
+  <text x="40" y="546" font-size="17" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#15803d">L1L001    L2M014    L3H007</text>
+  <text x="40" y="572" font-size="13" fill="#6b7280">Level 1 / LOW · Level 2 / MEDIUM · Level 3 / HIGH</text>
+
+  <text x="560" y="516" font-size="15" font-weight="700" fill="#1a2233">Rejected</text>
+  <text x="560" y="546" font-size="17" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" fill="#b91c1c">Q001L    L2-LOW-001    L1M001</text>
+  <text x="560" y="572" font-size="13" fill="#6b7280">no level · hyphens · M marker with LOW severity</text>
+
+  <rect x="40" y="596" width="920" height="40" rx="8" fill="#f3f4f6"/>
+  <text x="60" y="622" font-size="14" fill="#374151">The quesID is also the upsert key — uploading an existing ID updates that question instead of creating a duplicate.</text>
+</svg>

@@ -1,17 +1,17 @@
 package com.ems.service.impl;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.annotation.CacheEvict;
@@ -38,6 +38,9 @@ import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.QuestionRepository;
 import com.ems.service.AuditService;
 import com.ems.service.QuestionService;
+import com.ems.util.QuestionBulkFileReader;
+import com.ems.util.QuestionBulkFileReader.Column;
+import com.ems.util.QuestionBulkFileReader.QuestionRow;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,7 +55,10 @@ import lombok.extern.slf4j.Slf4j;
 @Transactional
 public class QuestionServiceImpl implements QuestionService {
 
-	private static final Pattern QUESTION_CODE_PATTERN = Pattern.compile("^(L[123])([LMH])\\d{3,}$", Pattern.CASE_INSENSITIVE);
+	/** Sequence then severity marker, e.g. Q001L; the level comes from its own column. */
+	private static final Pattern SEQUENCE_QUESTION_CODE_PATTERN = Pattern.compile("^Q\\d{3,}([LMH])$");
+	/** Older format with the level built in, e.g. L1L001; still accepted for existing questions. */
+	private static final Pattern LEVEL_QUESTION_CODE_PATTERN = Pattern.compile("^(L[123])([LMH])\\d{3,}$");
 	private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {
 	};
 
@@ -189,43 +195,50 @@ public class QuestionServiceImpl implements QuestionService {
 			throw new BusinessException("Bulk upload file is required", HttpStatus.BAD_REQUEST);
 		}
 
-		int totalRows = 0;
-		int importedRows = 0;
-		List<String> errors = new ArrayList<>();
-
-		try (BufferedReader reader = new BufferedReader(
-				new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8))) {
-			String line;
-			boolean headerSkipped = false;
-
-			while ((line = reader.readLine()) != null) {
-				if (!headerSkipped && line.toLowerCase(Locale.ROOT).contains("quesid")) {
-					headerSkipped = true;
-					continue;
-				}
-				if (line.isBlank()) {
-					continue;
-				}
-
-				totalRows++;
-				try {
-					QuestionUpsertRequest request = parseBulkRow(line);
-					if (questionRepository.existsByQuestionCodeIgnoreCase(request.questionCode())) {
-						update(
-								questionRepository.findByQuestionCodeIgnoreCase(request.questionCode())
-										.orElseThrow()
-										.getId(),
-								request);
-					} else {
-						create(request);
-					}
-					importedRows++;
-				} catch (Exception ex) {
-					errors.add("Row " + totalRows + ": " + ex.getMessage());
-				}
-			}
+		List<QuestionRow> rows;
+		try {
+			rows = QuestionBulkFileReader.read(file);
 		} catch (IOException ex) {
 			throw new BusinessException("Failed to read bulk upload file", HttpStatus.BAD_REQUEST);
+		}
+		if (rows.isEmpty()) {
+			throw new BusinessException("Bulk upload file does not contain any questions", HttpStatus.BAD_REQUEST);
+		}
+
+		int createdRows = 0;
+		int updatedRows = 0;
+		List<String> errors = new ArrayList<>();
+		Map<String, String> firstRowByQuestionCode = new HashMap<>();
+
+		for (QuestionRow row : rows) {
+			String questionCode = row.get(Column.QUES_ID).toUpperCase(Locale.ROOT);
+			try {
+				String firstRow = questionCode.isEmpty()
+						? null
+						: firstRowByQuestionCode.putIfAbsent(questionCode, row.label());
+				if (firstRow != null) {
+					throw new BusinessException("quesID is repeated in this file (first used on " + firstRow + ")");
+				}
+
+				QuestionUpsertRequest request = parseBulkRow(row);
+				Question existingQuestion = questionRepository.findByQuestionCodeIgnoreCase(request.questionCode())
+						.orElse(null);
+				if (existingQuestion == null) {
+					create(request);
+					createdRows++;
+				} else if (existingQuestion.getCertificationLevel() != request.certificationLevel()) {
+					// quesID is unique across all levels, so updating here would quietly
+					// move an existing question (and its exam history) to another level.
+					throw new BusinessException("quesID already exists for level " + existingQuestion.getCertificationLevel()
+							+ "; use a different quesID for this " + request.certificationLevel() + " question");
+				} else {
+					update(existingQuestion.getId(), request);
+					updatedRows++;
+				}
+			} catch (Exception ex) {
+				String rowReference = questionCode.isEmpty() ? row.label() : row.label() + " (" + questionCode + ")";
+				errors.add(rowReference + ": " + ex.getMessage());
+			}
 		}
 
 		// One summary row for the batch as a whole; each imported/updated question
@@ -235,75 +248,127 @@ public class QuestionServiceImpl implements QuestionService {
 				.eventType(AuditEventType.ADMIN_ACTION)
 				.outcome(errors.isEmpty() ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
 				.targetType("QUESTION")
-				.description("Bulk uploaded questions: totalRows=" + totalRows
-						+ ", imported=" + importedRows + ", failed=" + errors.size())
+				.description("Bulk uploaded questions: totalRows=" + rows.size()
+						+ ", created=" + createdRows + ", updated=" + updatedRows + ", failed=" + errors.size())
 				.build());
 
-		return new BulkQuestionUploadResponse(totalRows, importedRows, errors.size(), errors);
+		return new BulkQuestionUploadResponse(
+				rows.size(), createdRows + updatedRows, createdRows, updatedRows, errors.size(), errors);
 	}
 
-	private QuestionUpsertRequest parseBulkRow(String line) {
-		String[] tokens = line.split(",", -1);
-		if (tokens.length < 8) {
-			throw new BusinessException(
-					"Bulk upload row must contain at least 8 columns: quesID, question, option1, option2, option3, option4, answer, severity");
-		}
-
-		String questionCode = tokens[0].trim();
-		CertificationLevel level = parseLevelFromQuestionCode(questionCode);
-		String questionText = tokens[1].trim();
-
+	private QuestionUpsertRequest parseBulkRow(QuestionRow row) {
+		String questionCode = requiredValue(row, Column.QUES_ID).toUpperCase(Locale.ROOT);
 		List<String> options = List.of(
-				tokens[2].trim(),
-				tokens[3].trim(),
-				tokens[4].trim(),
-				tokens[5].trim());
+				requiredValue(row, Column.OPTION1),
+				requiredValue(row, Column.OPTION2),
+				requiredValue(row, Column.OPTION3),
+				requiredValue(row, Column.OPTION4));
 
-		List<String> correctOptions = Arrays.stream(tokens[6].split("\\|"))
-				.map(String::trim)
-				.filter(value -> !value.isBlank())
+		// Several correct answers are separated by "|". Each is stored with its
+		// option's own spelling, so "kwh" in the answer column saves as "kWh".
+		List<String> correctOptions = Arrays.stream(requiredValue(row, Column.ANSWER).split("\\|"))
+				.map(String::strip)
+				.filter(answer -> !answer.isEmpty())
+				.map(answer -> options.stream()
+						.filter(option -> option.equalsIgnoreCase(answer))
+						.findFirst()
+						.orElse(answer))
+				.distinct()
 				.toList();
 
-		QuestionSeverity severity = QuestionSeverity.valueOf(tokens[7].trim().toUpperCase(Locale.ROOT));
 		QuestionType questionType = correctOptions.size() > 1
 				? QuestionType.MULTIPLE_CHOICE
 				: QuestionType.SINGLE_CHOICE;
 
-		QuestionCategory questionCategory = (tokens.length > 8 && !tokens[8].trim().isBlank())
-				? QuestionCategory.valueOf(tokens[8].trim().toUpperCase(Locale.ROOT))
-				: QuestionCategory.GENERAL;
-
-		BigDecimal marks = (tokens.length > 9 && !tokens[9].trim().isBlank())
-				? new BigDecimal(tokens[9].trim())
-				: BigDecimal.ONE;
+		QuestionCategory questionCategory = row.get(Column.CATEGORY).isEmpty()
+				? QuestionCategory.GENERAL
+				: parseEnum(QuestionCategory.class, row.get(Column.CATEGORY), Column.CATEGORY);
 
 		return new QuestionUpsertRequest(
 				questionCode,
-				level,
+				resolveLevel(row.get(Column.LEVEL), questionCode),
 				questionCategory,
 				questionType,
-				questionText,
+				requiredValue(row, Column.QUESTION),
 				options,
 				correctOptions,
-				severity,
-				marks,
+				parseEnum(QuestionSeverity.class, requiredValue(row, Column.SEVERITY), Column.SEVERITY),
+				parseMarks(row.get(Column.MARKS)),
 				true);
 	}
 
+	private String requiredValue(QuestionRow row, Column column) {
+		String value = row.get(column);
+		if (value.isEmpty()) {
+			throw new BusinessException(column.headerName() + " is required");
+		}
+		return value;
+	}
+
+	private CertificationLevel resolveLevel(String level, String questionCode) {
+		if (level.isEmpty()) {
+			Matcher matcher = LEVEL_QUESTION_CODE_PATTERN.matcher(questionCode);
+			if (matcher.matches()) {
+				return CertificationLevel.valueOf(matcher.group(1));
+			}
+			throw new BusinessException("Level is required (L1, L2 or L3)");
+		}
+
+		// Accepts "L1", "1" and "Level 1".
+		String normalized = level.toUpperCase(Locale.ROOT)
+				.replaceAll("[^A-Z0-9]", "")
+				.replaceFirst("^(LEVEL|L)?", "L");
+		try {
+			return CertificationLevel.valueOf(normalized);
+		} catch (IllegalArgumentException ex) {
+			throw new BusinessException("Invalid Level '" + level + "'; expected L1, L2 or L3");
+		}
+	}
+
+	private <E extends Enum<E>> E parseEnum(Class<E> enumType, String value, Column column) {
+		String normalized = value.toUpperCase(Locale.ROOT).replace(' ', '_');
+		return Arrays.stream(enumType.getEnumConstants())
+				.filter(constant -> constant.name().equals(normalized))
+				.findFirst()
+				.orElseThrow(() -> new BusinessException("Invalid " + column.headerName() + " '" + value + "'; expected "
+						+ Arrays.stream(enumType.getEnumConstants()).map(Enum::name).collect(Collectors.joining(", "))));
+	}
+
+	private BigDecimal parseMarks(String marks) {
+		if (marks.isEmpty()) {
+			return BigDecimal.ONE;
+		}
+		try {
+			BigDecimal value = new BigDecimal(marks);
+			if (value.signum() < 0) {
+				throw new BusinessException("marks cannot be negative");
+			}
+			return value;
+		} catch (NumberFormatException ex) {
+			throw new BusinessException("Invalid marks '" + marks + "'; expected a number");
+		}
+	}
+
 	private void validateQuestionRequest(QuestionUpsertRequest request) {
-		Matcher matcher = QUESTION_CODE_PATTERN.matcher(request.questionCode().trim().toUpperCase(Locale.ROOT));
-		if (!matcher.matches()) {
-			throw new BusinessException("Question code must match format like L1L001, L2M001, or L3H001");
+		String questionCode = request.questionCode().trim().toUpperCase(Locale.ROOT);
+		Matcher sequenceCode = SEQUENCE_QUESTION_CODE_PATTERN.matcher(questionCode);
+		Matcher levelCode = LEVEL_QUESTION_CODE_PATTERN.matcher(questionCode);
+
+		String severityMarker;
+		if (sequenceCode.matches()) {
+			severityMarker = sequenceCode.group(1);
+		} else if (levelCode.matches()) {
+			if (CertificationLevel.valueOf(levelCode.group(1)) != request.certificationLevel()) {
+				throw new BusinessException("Question code level does not match certification level");
+			}
+			severityMarker = levelCode.group(2);
+		} else {
+			throw new BusinessException("Question code must match format like Q001L, Q008M or Q018H (or L1L001)");
 		}
 
-		CertificationLevel levelFromCode = CertificationLevel.valueOf(matcher.group(1).toUpperCase(Locale.ROOT));
-		String severityCode = matcher.group(2).toUpperCase(Locale.ROOT);
-
-		if (levelFromCode != request.certificationLevel()) {
-			throw new BusinessException("Question code level does not match certification level");
-		}
-		if (!severityCode.equals(request.severity().code())) {
-			throw new BusinessException("Question code severity marker does not match severity");
+		if (!severityMarker.equals(request.severity().code())) {
+			throw new BusinessException("Question code severity marker (" + severityMarker
+					+ ") does not match severity " + request.severity());
 		}
 
 		if (request.options().size() != 4) {
@@ -320,17 +385,9 @@ public class QuestionServiceImpl implements QuestionService {
 
 		for (String correctOption : request.correctOptions()) {
 			if (request.options().stream().noneMatch(option -> option.equalsIgnoreCase(correctOption))) {
-				throw new BusinessException("Each correct option must match one of the provided options");
+				throw new BusinessException("Answer '" + correctOption + "' does not match any of the options");
 			}
 		}
-	}
-
-	private CertificationLevel parseLevelFromQuestionCode(String questionCode) {
-		Matcher matcher = QUESTION_CODE_PATTERN.matcher(questionCode.trim().toUpperCase(Locale.ROOT));
-		if (!matcher.matches()) {
-			throw new BusinessException("Invalid question code format");
-		}
-		return CertificationLevel.valueOf(matcher.group(1).toUpperCase(Locale.ROOT));
 	}
 
 	private Question toEntity(QuestionUpsertRequest request, Question existingQuestion) {
