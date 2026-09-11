@@ -187,8 +187,26 @@ class QuestionServiceImplTest {
                 "Row 3 (Q002L): Question code severity marker (L) does not match severity MEDIUM",
                 "Row 4 (Q003L): Level is required (L1, L2 or L3)",
                 "Row 5 (Q001L): quesID is repeated in this file (first used on Row 2)",
-                "Row 6 (Q004X): Question code must match format like Q001L, Q008M or Q018H (or L1L001)",
+                "Row 6 (Q004X): Question code must match format like Q001L or L2Q001L (or L1L001)",
                 "Row 7 (Q005L): Invalid Level 'L4'; expected L1, L2 or L3");
+    }
+
+    @Test
+    @DisplayName("codes with a level prefix (L2Q025M) import, and the prefix must agree with the Level column")
+    void importsLevelPrefixedCodes() throws IOException {
+        MockMultipartFile file = xlsx(HEADER,
+                row("L2Q025M", "MEDIUM", "L2"),
+                row("L3Q100H", "HIGH", ""),
+                row("L2Q002L", "LOW", "L1"));
+
+        BulkQuestionUploadResponse response = questionService.bulkUpload(file);
+
+        assertThat(response.createdRows()).isEqualTo(2);
+        assertThat(savedByCode.get("L2Q025M").getCertificationLevel()).isEqualTo(CertificationLevel.L2);
+        // With no Level column value, the prefix supplies the level.
+        assertThat(savedByCode.get("L3Q100H").getCertificationLevel()).isEqualTo(CertificationLevel.L3);
+        assertThat(response.errors()).containsExactly(
+                "Row 4 (L2Q002L): Question code level (L2) does not match Level L1");
     }
 
     @Test

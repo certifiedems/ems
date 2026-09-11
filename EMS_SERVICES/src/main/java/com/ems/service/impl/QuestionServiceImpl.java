@@ -58,10 +58,15 @@ import lombok.extern.slf4j.Slf4j;
 @Transactional
 public class QuestionServiceImpl implements QuestionService {
 
-	/** Sequence then severity marker, e.g. Q001L; the level comes from its own column. */
-	private static final Pattern SEQUENCE_QUESTION_CODE_PATTERN = Pattern.compile("^Q\\d{3,}([LMH])$");
+	/**
+	 * Sequence then severity marker, with an optional level prefix: Q001L or
+	 * L2Q001L. Without the prefix, the level comes from the Level column.
+	 */
+	private static final Pattern SEQUENCE_QUESTION_CODE_PATTERN = Pattern.compile("^(L[123])?Q\\d{3,}([LMH])$");
 	/** Older format with the level built in, e.g. L1L001; still accepted for existing questions. */
 	private static final Pattern LEVEL_QUESTION_CODE_PATTERN = Pattern.compile("^(L[123])([LMH])\\d{3,}$");
+	private static final String QUESTION_CODE_FORMAT_MESSAGE =
+			"Question code must match format like Q001L or L2Q001L (or L1L001)";
 	private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {
 	};
 
@@ -338,11 +343,13 @@ public class QuestionServiceImpl implements QuestionService {
 
 	private CertificationLevel resolveLevel(String level, String questionCode) {
 		if (level.isEmpty()) {
-			Matcher matcher = LEVEL_QUESTION_CODE_PATTERN.matcher(questionCode);
-			if (matcher.matches()) {
-				return CertificationLevel.valueOf(matcher.group(1));
+			CertificationLevel codeLevel = levelInCode(questionCode);
+			if (codeLevel != null) {
+				return codeLevel;
 			}
-			throw new BusinessException("Level is required (L1, L2 or L3)");
+			throw new BusinessException(SEQUENCE_QUESTION_CODE_PATTERN.matcher(questionCode).matches()
+					? "Level is required (L1, L2 or L3)"
+					: QUESTION_CODE_FORMAT_MESSAGE);
 		}
 
 		// Accepts "L1", "1" and "Level 1".
@@ -354,6 +361,16 @@ public class QuestionServiceImpl implements QuestionService {
 		} catch (IllegalArgumentException ex) {
 			throw new BusinessException("Invalid Level '" + level + "'; expected L1, L2 or L3");
 		}
+	}
+
+	/** The level a question code carries (L2Q001L, L1L001), or null for a code like Q001L that has none. */
+	private CertificationLevel levelInCode(String questionCode) {
+		Matcher sequenceCode = SEQUENCE_QUESTION_CODE_PATTERN.matcher(questionCode);
+		if (sequenceCode.matches()) {
+			return sequenceCode.group(1) == null ? null : CertificationLevel.valueOf(sequenceCode.group(1));
+		}
+		Matcher levelCode = LEVEL_QUESTION_CODE_PATTERN.matcher(questionCode);
+		return levelCode.matches() ? CertificationLevel.valueOf(levelCode.group(1)) : null;
 	}
 
 	private <E extends Enum<E>> E parseEnum(Class<E> enumType, String value, Column column) {
@@ -387,14 +404,17 @@ public class QuestionServiceImpl implements QuestionService {
 
 		String severityMarker;
 		if (sequenceCode.matches()) {
-			severityMarker = sequenceCode.group(1);
+			severityMarker = sequenceCode.group(2);
 		} else if (levelCode.matches()) {
-			if (CertificationLevel.valueOf(levelCode.group(1)) != request.certificationLevel()) {
-				throw new BusinessException("Question code level does not match certification level");
-			}
 			severityMarker = levelCode.group(2);
 		} else {
-			throw new BusinessException("Question code must match format like Q001L, Q008M or Q018H (or L1L001)");
+			throw new BusinessException(QUESTION_CODE_FORMAT_MESSAGE);
+		}
+
+		CertificationLevel codeLevel = levelInCode(questionCode);
+		if (codeLevel != null && codeLevel != request.certificationLevel()) {
+			throw new BusinessException("Question code level (" + codeLevel + ") does not match Level "
+					+ request.certificationLevel());
 		}
 
 		if (!severityMarker.equals(request.severity().code())) {
