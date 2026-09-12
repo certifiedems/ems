@@ -17,7 +17,23 @@ export const adminAPI = {
 
 	getAdminQuestions: (params) => apiClient.get('/admin/questions', { params }),
 
+	// Optional filters: search, status, paymentMethod, gatewayMode, from, to (ISO
+	// instants; `to` is exclusive). The report download takes the same filters.
 	getAdminPayments: (params) => apiClient.get('/admin/payments', { params }),
+
+	// The payment report as a file. Pass the list filters plus `format`
+	// (EXCEL | CSV) and the browser's `timeZone`, which the file's timestamps use.
+	exportAdminPayments: (params) =>
+		apiClient.get('/admin/payments/export', { params, responseType: 'blob', timeout: 120000 }),
+
+	// Asks Razorpay what became of a payment. A pending or failed payment it
+	// confirms as captured becomes SUCCESS, and the payment mode is filled in;
+	// nothing is ever downgraded. The response message says what was found.
+	reconcilePayment: (transactionId) =>
+		apiClient.post(`/admin/payments/${encodeURIComponent(transactionId)}/reconcile`, {}),
+
+	downloadPaymentReceipt: (transactionId) =>
+		apiClient.get(`/admin/payments/${encodeURIComponent(transactionId)}/receipt`, { responseType: 'blob' }),
 
 	getCertificationApplications: (params) =>
 		apiClient.get('/admin/certification-applications', { params }),

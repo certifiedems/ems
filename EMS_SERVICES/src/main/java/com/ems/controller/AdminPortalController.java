@@ -1,23 +1,31 @@
 package com.ems.controller;
 
+import java.time.DateTimeException;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.io.Resource;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.ems.audit.AuditEventType;
 import com.ems.audit.AuditOutcome;
+import com.ems.dto.request.AdminPaymentFilter;
 import com.ems.dto.response.AdminAuditLogResponse;
+import com.ems.dto.response.AdminPaymentReconciliation;
 import com.ems.dto.response.AdminUserResponse;
 import com.ems.dto.response.AdminPaymentResponse;
 import com.ems.dto.response.AdminViolationResponse;
@@ -29,8 +37,13 @@ import com.ems.dto.response.CertificationSummaryResponse;
 import com.ems.dto.response.QuestionResponse;
 import com.ems.dto.response.VideoRecordingResponse;
 import com.ems.enums.CertificationLevel;
+import com.ems.enums.PaymentGatewayMode;
+import com.ems.enums.PaymentStatus;
 import com.ems.enums.QuestionSeverity;
+import com.ems.enums.ReportFormat;
 import com.ems.service.AdminPortalService;
+import com.ems.service.PaymentReceiptContent;
+import com.ems.service.ReportFileContent;
 import com.ems.util.CorrelationIdUtil;
 
 import lombok.RequiredArgsConstructor;
@@ -94,9 +107,63 @@ public class AdminPortalController {
 
     // — Payments
 
+    /**
+     * Every payment, narrowed by any combination of the filters. {@code from} is
+     * inclusive and {@code to} exclusive, both on when the payment was opened.
+     */
     @GetMapping("/payments")
-    public ResponseEntity<ApiResponse<List<AdminPaymentResponse>>> getAllPayments() {
-        return ok("Payments fetched successfully", adminPortalService.getAllPayments());
+    public ResponseEntity<ApiResponse<List<AdminPaymentResponse>>> searchPayments(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) PaymentStatus status,
+            @RequestParam(required = false) PaymentGatewayMode gatewayMode,
+            @RequestParam(required = false) String paymentMethod,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to) {
+        return ok("Payments fetched successfully", adminPortalService.searchPayments(
+                new AdminPaymentFilter(search, status, gatewayMode, paymentMethod, from, to)));
+    }
+
+    /**
+     * The payment report: the rows {@code GET /payments} returns for the same
+     * filters, as EXCEL or CSV.
+     *
+     * <p>{@code timeZone} is the browser's IANA zone, so timestamps in the file
+     * read as the admin's local time. A missing or unrecognised zone falls back
+     * to UTC rather than failing the download.</p>
+     */
+    @GetMapping("/payments/export")
+    public ResponseEntity<byte[]> exportPayments(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) PaymentStatus status,
+            @RequestParam(required = false) PaymentGatewayMode gatewayMode,
+            @RequestParam(required = false) String paymentMethod,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to,
+            @RequestParam(defaultValue = "EXCEL") ReportFormat format,
+            @RequestParam(required = false) String timeZone) {
+        ReportFileContent content = adminPortalService.exportPayments(
+                new AdminPaymentFilter(search, status, gatewayMode, paymentMethod, from, to),
+                format,
+                resolveZone(timeZone));
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, content.contentType())
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + content.fileName() + "\"")
+                .body(content.content());
+    }
+
+    @PostMapping("/payments/{transactionId}/reconcile")
+    public ResponseEntity<ApiResponse<AdminPaymentResponse>> reconcilePayment(@PathVariable String transactionId) {
+        AdminPaymentReconciliation result = adminPortalService.reconcilePayment(transactionId);
+        return ok(result.message(), result.payment());
+    }
+
+    @GetMapping("/payments/{transactionId}/receipt")
+    public ResponseEntity<Resource> downloadPaymentReceipt(@PathVariable String transactionId) {
+        PaymentReceiptContent content = adminPortalService.downloadPaymentReceipt(transactionId);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, content.contentType())
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + content.fileName() + "\"")
+                .body(content.resource());
     }
 
     // — Certifications
@@ -166,6 +233,17 @@ public class AdminPortalController {
             @RequestParam(required = false, defaultValue = "200") int limit) {
         return ok("Audit logs fetched successfully",
                 adminPortalService.searchAuditLogs(eventType, outcome, actor, targetUserId, from, to, limit));
+    }
+
+    private static ZoneId resolveZone(String timeZone) {
+        if (timeZone == null || timeZone.isBlank()) {
+            return ZoneOffset.UTC;
+        }
+        try {
+            return ZoneId.of(timeZone.trim());
+        } catch (DateTimeException ex) {
+            return ZoneOffset.UTC;
+        }
     }
 
     private <T> ResponseEntity<ApiResponse<T>> ok(String message, T data) {

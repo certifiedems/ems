@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.ems.enums.PaymentStatus;
 import com.ems.service.PaymentService;
+import com.ems.service.payment.PaymentInstrument;
 import com.ems.service.payment.RazorpayClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -74,15 +75,20 @@ public class RazorpayWebhookController {
                 return ResponseEntity.ok().build();
             }
 
+            // Kept for failures as well as captures: "the UPI attempt failed" is
+            // what an admin needs when a candidate asks why they were not let in.
+            PaymentInstrument instrument = PaymentInstrument.fromRazorpay(entity);
+
             switch (eventName) {
                 case EVENT_PAYMENT_CAPTURED -> paymentService.settleFromGatewayCallback(
                         orderId,
                         paymentId,
                         PaymentStatus.SUCCESS,
                         RazorpayClient.fromMinorUnits(entity.path("amount").asLong()),
-                        text(entity, "currency"));
+                        text(entity, "currency"),
+                        instrument);
                 case EVENT_PAYMENT_FAILED -> paymentService.settleFromGatewayCallback(
-                        orderId, paymentId, PaymentStatus.FAILED, null, null);
+                        orderId, paymentId, PaymentStatus.FAILED, null, null, instrument);
                 // Everything else Razorpay is subscribed to (refunds, settlements,
                 // disputes) is acknowledged so it is not retried, and left to the
                 // dashboard until this system has a use for it.

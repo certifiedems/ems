@@ -24,6 +24,7 @@ import com.ems.config.RazorpayProperties;
 import com.ems.dto.request.PaymentRefundRequest;
 import com.ems.dto.request.PaymentVerificationRequest;
 import com.ems.entity.Payment;
+import com.ems.enums.PaymentGatewayMode;
 import com.ems.enums.PaymentStatus;
 import com.ems.exception.BusinessException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -94,6 +95,18 @@ class RazorpayPaymentProviderStrategyTest {
     }
 
     @Test
+    @DisplayName("reports test, live or simulated from the configured key")
+    void gatewayModeFollowsTheKey() {
+        assertThat(strategy.gatewayMode()).isEqualTo(PaymentGatewayMode.TEST);
+
+        properties.setKeyId("rzp_live_key");
+        assertThat(strategy.gatewayMode()).isEqualTo(PaymentGatewayMode.LIVE);
+
+        properties.setEnabled(false);
+        assertThat(strategy.gatewayMode()).isEqualTo(PaymentGatewayMode.SIMULATED);
+    }
+
+    @Test
     @DisplayName("settles a captured payment that matches the billed amount")
     void verifiesCapturedPayment() {
         givenValidSignature();
@@ -103,6 +116,19 @@ class RazorpayPaymentProviderStrategyTest {
 
         assertThat(result.paymentStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(result.providerReference()).isEqualTo(PAYMENT_ID);
+    }
+
+    @Test
+    @DisplayName("reports how a verified payment was paid")
+    void verificationReportsPaymentMethod() {
+        givenValidSignature();
+        when(razorpayClient.fetchPayment(PAYMENT_ID)).thenReturn(node(
+                "{\"status\":\"captured\",\"amount\":99900,\"currency\":\"INR\",\"order_id\":\"" + ORDER_ID
+                        + "\",\"method\":\"upi\",\"vpa\":\"candidate@okhdfcbank\"}"));
+
+        PaymentProviderResult result = strategy.verify(pendingPayment(), verification());
+
+        assertThat(result.instrument()).isEqualTo(new PaymentInstrument("UPI", "candidate@okhdfcbank"));
     }
 
     @Test
@@ -173,6 +199,59 @@ class RazorpayPaymentProviderStrategyTest {
         assertThatThrownBy(() -> strategy.refund(neverPaid, new PaymentRefundRequest("duplicate charge")))
                 .isInstanceOf(BusinessException.class);
         verify(razorpayClient, never()).createRefund(anyString(), any(), any());
+    }
+
+    @Test
+    @DisplayName("a gateway check finds the capture behind an earlier failed attempt on the same order")
+    void lookupPrefersCaptureOverRecordedFailure() {
+        Payment failedThenRescued = pendingPayment();
+        failedThenRescued.setPaymentStatus(PaymentStatus.FAILED);
+        failedThenRescued.setProviderReference("pay_DECLINED");
+        when(razorpayClient.fetchOrderPayments(ORDER_ID)).thenReturn(node("{\"items\":["
+                + "{\"id\":\"pay_DECLINED\",\"status\":\"failed\",\"amount\":99900,\"currency\":\"INR\","
+                + "\"order_id\":\"" + ORDER_ID + "\",\"method\":\"card\",\"created_at\":100},"
+                + "{\"id\":\"" + PAYMENT_ID + "\",\"status\":\"captured\",\"amount\":99900,\"currency\":\"INR\","
+                + "\"order_id\":\"" + ORDER_ID + "\",\"method\":\"netbanking\",\"bank\":\"HDFC\",\"created_at\":200}"
+                + "]}"));
+
+        PaymentProviderResult result = strategy.lookup(failedThenRescued);
+
+        assertThat(result.paymentStatus()).isEqualTo(PaymentStatus.SUCCESS);
+        assertThat(result.providerReference()).isEqualTo(PAYMENT_ID);
+        assertThat(result.instrument()).isEqualTo(new PaymentInstrument("NETBANKING", "HDFC"));
+    }
+
+    @Test
+    @DisplayName("a gateway check applies the same billed-amount rule as verification")
+    void lookupRejectsUnderpaidCapture() {
+        when(razorpayClient.fetchOrderPayments(ORDER_ID)).thenReturn(node("{\"items\":[{\"id\":\"" + PAYMENT_ID
+                + "\",\"status\":\"captured\",\"amount\":100,\"currency\":\"INR\",\"order_id\":\"" + ORDER_ID
+                + "\"}]}"));
+
+        assertThat(strategy.lookup(pendingPayment()).paymentStatus()).isEqualTo(PaymentStatus.FAILED);
+    }
+
+    @Test
+    @DisplayName("a gateway check on an order nobody paid reports it still pending")
+    void lookupOfUnpaidOrderIsPending() {
+        when(razorpayClient.fetchOrderPayments(ORDER_ID))
+                .thenReturn(node("{\"entity\":\"collection\",\"count\":0,\"items\":[]}"));
+
+        PaymentProviderResult result = strategy.lookup(pendingPayment());
+
+        assertThat(result.paymentStatus()).isEqualTo(PaymentStatus.PENDING);
+        assertThat(result.instrument()).isNull();
+    }
+
+    @Test
+    @DisplayName("there is no gateway to ask without credentials or an order")
+    void lookupWithoutGateway() {
+        assertThat(strategy.lookup(payment())).isNull();
+
+        properties.setEnabled(false);
+        assertThat(strategy.lookup(pendingPayment())).isNull();
+
+        verify(razorpayClient, never()).fetchOrderPayments(anyString());
     }
 
     private void givenValidSignature() {

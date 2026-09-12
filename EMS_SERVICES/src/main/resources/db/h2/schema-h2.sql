@@ -196,6 +196,9 @@ CREATE TABLE IF NOT EXISTS payments (
     payment_date                TIMESTAMP,
     provider_reference          VARCHAR(100),
     provider_order_id           VARCHAR(100),
+    payment_method              VARCHAR(30),
+    payment_method_detail       VARCHAR(100),
+    gateway_mode                VARCHAR(20),
     created_by                  VARCHAR(100)    NOT NULL,
     created_date                TIMESTAMP       NOT NULL,
     updated_by                  VARCHAR(100),
@@ -381,6 +384,12 @@ ALTER TABLE exams ADD COLUMN IF NOT EXISTS high_severity_percentage   DECIMAL(5,
 -- will not add the column to it -- so initiating a Razorpay payment would fail
 -- on the very insert that opens the order.
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS provider_order_id VARCHAR(100);
+
+-- Payment mode and live/test/simulated (V33 on Postgres), for the same reason:
+-- the payments insert and the admin payment search both name these columns.
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method        VARCHAR(30);
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS payment_method_detail VARCHAR(100);
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS gateway_mode          VARCHAR(20);
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_payments_provider_order_id ON payments (provider_order_id);

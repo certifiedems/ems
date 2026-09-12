@@ -48,6 +48,17 @@ public class RazorpayProperties {
                 && keySecret != null && !keySecret.isBlank();
     }
 
+    /**
+     * Whether the configured key is a test key.
+     *
+     * <p>Only an explicit {@code rzp_test_} prefix counts. Any other key is taken
+     * as live, because filing real money under test is the mistake that hides
+     * revenue from a report; the reverse only overstates it.</p>
+     */
+    public boolean isTestKey() {
+        return keyId != null && keyId.trim().startsWith("rzp_test_");
+    }
+
     public boolean hasWebhookSecret() {
         return webhookSecret != null && !webhookSecret.isBlank();
     }

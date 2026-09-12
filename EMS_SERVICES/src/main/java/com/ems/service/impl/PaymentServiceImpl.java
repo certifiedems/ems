@@ -29,6 +29,7 @@ import com.ems.entity.Payment;
 import com.ems.entity.User;
 import com.ems.enums.CertificationApplicationStatus;
 import com.ems.enums.CertificationLevel;
+import com.ems.enums.PaymentGatewayMode;
 import com.ems.enums.PaymentProvider;
 import com.ems.enums.PaymentStatus;
 import com.ems.exception.BusinessException;
@@ -41,6 +42,7 @@ import com.ems.service.PaymentReceiptContent;
 import com.ems.service.PaymentReceiptPdfGeneratorService;
 import com.ems.service.PaymentReceiptPdfGeneratorService.PaymentReceiptData;
 import com.ems.service.PaymentService;
+import com.ems.service.payment.PaymentInstrument;
 import com.ems.service.payment.PaymentProviderResult;
 import com.ems.service.payment.PaymentProviderStrategy;
 
@@ -110,6 +112,9 @@ public class PaymentServiceImpl implements PaymentService {
 				.amount(resolveAmountByLevel(application.getCertificationLevel()))
 				.currency(request.currency().trim().toUpperCase(Locale.ROOT))
 				.provider(provider.name())
+				// Fixed now, from the keys this checkout is about to use: nothing
+				// the gateway returns later says whether they were test or live.
+				.gatewayMode(strategy(provider).gatewayMode())
 				.paymentStatus(PaymentStatus.PENDING)
 				.build();
 
@@ -151,6 +156,7 @@ public class PaymentServiceImpl implements PaymentService {
 		PaymentProviderResult verification = strategy(provider).verify(payment, request);
 		payment.setPaymentStatus(verification.paymentStatus());
 		payment.setProviderReference(verification.providerReference());
+		applyInstrument(payment, verification.instrument());
 		// Stamped only once money has actually moved: a failed or still-pending
 		// attempt has no payment date, and the receipt prints this field.
 		if (verification.paymentStatus() == PaymentStatus.SUCCESS) {
@@ -192,8 +198,9 @@ public class PaymentServiceImpl implements PaymentService {
 			throw new BusinessException("Only successful payments can be refunded", HttpStatus.BAD_REQUEST);
 		}
 
-		PaymentProvider provider = parseProvider(payment.getProvider());
-		PaymentProviderResult refund = strategy(provider).refund(payment, request);
+		PaymentProviderStrategy strategy = strategy(parseProvider(payment.getProvider()));
+		requireCurrentGatewayMode(payment, strategy, "refunded");
+		PaymentProviderResult refund = strategy.refund(payment, request);
 		payment.setPaymentStatus(refund.paymentStatus());
 		payment.setProviderReference(refund.providerReference());
 		Payment savedPayment = paymentRepository.save(payment);
@@ -224,7 +231,8 @@ public class PaymentServiceImpl implements PaymentService {
 			String providerReference,
 			PaymentStatus status,
 			BigDecimal paidAmount,
-			String paidCurrency) {
+			String paidCurrency,
+			PaymentInstrument instrument) {
 		Payment payment = paymentRepository.findByProviderOrderId(providerOrderId).orElse(null);
 		if (payment == null) {
 			// Not an error: one Razorpay account can serve more than this
@@ -273,6 +281,58 @@ public class PaymentServiceImpl implements PaymentService {
 			return;
 		}
 
+		applyInstrument(payment, instrument);
+		settleFromGateway(payment, status, providerReference, "gateway callback");
+	}
+
+	@Override
+	@CacheEvict(cacheNames = "dashboard", allEntries = true)
+	public String reconcileWithGateway(String transactionId) {
+		Payment payment = paymentRepository.findByTransactionId(transactionId)
+				.orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+
+		PaymentProviderStrategy strategy = strategy(parseProvider(payment.getProvider()));
+		requireCurrentGatewayMode(payment, strategy, "checked");
+
+		PaymentProviderResult gateway = strategy.lookup(payment);
+		if (gateway == null) {
+			throw new BusinessException(
+					"This payment never reached a payment gateway, so there is nothing to check it against",
+					HttpStatus.BAD_REQUEST);
+		}
+
+		if (payment.getGatewayMode() == null) {
+			// Recorded before modes were tracked. The current keys have just found
+			// its order, and an order is only visible to keys of the mode it was
+			// created in, so that mode is now known.
+			payment.setGatewayMode(strategy.gatewayMode());
+		}
+		applyInstrument(payment, gateway.instrument());
+
+		PaymentStatus recorded = payment.getPaymentStatus();
+		boolean openToSettlement = recorded == PaymentStatus.PENDING || recorded == PaymentStatus.FAILED;
+		if (openToSettlement && gateway.paymentStatus() == PaymentStatus.SUCCESS) {
+			settleFromGateway(payment, PaymentStatus.SUCCESS, gateway.providerReference(), "admin gateway check");
+			return "The gateway confirms this payment was captured for the billed amount. It is now marked SUCCESS.";
+		}
+
+		paymentRepository.save(payment);
+		if (!openToSettlement) {
+			return "This payment is already " + recorded + ", so its status was left unchanged. "
+					+ "Payment mode and environment were refreshed from the gateway where it reported them.";
+		}
+		if (gateway.paymentStatus() == PaymentStatus.PENDING) {
+			return "The gateway has no captured payment on this order yet. It stays " + recorded + ".";
+		}
+		return "The gateway reports no successful payment for the billed amount on this order. It stays "
+				+ recorded + ".";
+	}
+
+	/**
+	 * Applies an outcome the gateway itself reported — by webhook, or to an admin
+	 * who asked — to the payment and the application it pays for, and records it.
+	 */
+	private void settleFromGateway(Payment payment, PaymentStatus status, String providerReference, String source) {
 		payment.setPaymentStatus(status);
 		if (providerReference != null && !providerReference.isBlank()) {
 			payment.setProviderReference(providerReference);
@@ -282,8 +342,14 @@ public class PaymentServiceImpl implements PaymentService {
 		}
 		Payment savedPayment = paymentRepository.save(payment);
 
+		/*
+		 * An application already paid for is left alone. This payment is then a
+		 * second charge against it -- two checkouts opened side by side, both paid
+		 * -- which is something to refund, not a reason to downgrade the payment
+		 * that counted or to reopen an exam that may already have been sat.
+		 */
 		CertificationApplication application = savedPayment.getCertificationApplication();
-		if (application != null) {
+		if (application != null && application.getPaymentStatus() != PaymentStatus.SUCCESS) {
 			application.setPaymentStatus(status);
 			if (status == PaymentStatus.SUCCESS) {
 				application.setApplicationStatus(CertificationApplicationStatus.IN_PROGRESS);
@@ -291,15 +357,15 @@ public class PaymentServiceImpl implements PaymentService {
 			certificationApplicationRepository.save(application);
 		}
 
-		log.info("Payment settled from gateway callback: transactionId={}, status={}, providerReference={}",
-				savedPayment.getTransactionId(), status, providerReference);
+		log.info("Payment settled from {}: transactionId={}, status={}, providerReference={}",
+				source, savedPayment.getTransactionId(), status, providerReference);
 		auditService.record(AuditEvent.builder()
 				.eventType(AuditEventType.PAYMENT)
 				.outcome(status == PaymentStatus.SUCCESS ? AuditOutcome.SUCCESS : AuditOutcome.FAILURE)
 				.targetUserId(savedPayment.getUser() == null ? null : savedPayment.getUser().getUserId())
 				.targetType("PAYMENT")
 				.targetId(savedPayment.getTransactionId())
-				.description("Payment settled via gateway callback as " + status)
+				.description("Payment settled via " + source + " as " + status)
 				.build());
 	}
 
@@ -318,13 +384,25 @@ public class PaymentServiceImpl implements PaymentService {
 		User user = findUser(email);
 		Payment payment = paymentRepository.findByTransactionIdAndUser(transactionId, user)
 				.orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+		return renderReceipt(payment);
+	}
 
+	@Override
+	@Transactional(readOnly = true)
+	public PaymentReceiptContent downloadReceiptForAdmin(String transactionId) {
+		Payment payment = paymentRepository.findByTransactionId(transactionId)
+				.orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+		return renderReceipt(payment);
+	}
+
+	private PaymentReceiptContent renderReceipt(Payment payment) {
 		// A pending payment has not settled, so there is nothing to receipt yet.
 		if (payment.getPaymentStatus() == PaymentStatus.PENDING) {
 			throw new BusinessException("Receipt is available once the payment has been processed",
 					HttpStatus.CONFLICT);
 		}
 
+		User user = payment.getUser();
 		byte[] pdf = receiptPdfGeneratorService.generateReceiptPdf(new PaymentReceiptData(
 				payment.getTransactionId(),
 				(user.getFirstName() + " " + user.getLastName()).trim(),
@@ -379,6 +457,45 @@ public class PaymentServiceImpl implements PaymentService {
 			log.warn("Rejected simulated provider while a live gateway is configured: provider={}", provider);
 			throw new BusinessException("This payment method is not available", HttpStatus.BAD_REQUEST);
 		}
+	}
+
+	/**
+	 * Refuses to act on a payment through a gateway configured for different
+	 * money than it was taken in.
+	 *
+	 * <p>A test-key order does not exist under live keys, or the other way round,
+	 * so the call could only fail — and fail as "gateway unavailable, try again",
+	 * which no retry fixes. Worse is the gateway switched off: the simulated
+	 * fallback would happily record a refund of live money that never left the
+	 * account. A payment from before modes were tracked is let through as it
+	 * always was.</p>
+	 */
+	private void requireCurrentGatewayMode(Payment payment, PaymentProviderStrategy strategy, String action) {
+		PaymentGatewayMode recorded = payment.getGatewayMode();
+		PaymentGatewayMode current = strategy.gatewayMode();
+		if (recorded == null || recorded == current) {
+			return;
+		}
+
+		String message = recorded == PaymentGatewayMode.SIMULATED
+				? "This was a simulated payment and never reached a gateway, so it cannot be " + action
+						+ " while a real gateway is configured."
+				: "This payment was taken in " + recorded + " mode but the gateway is now in " + current
+						+ " mode, so it cannot be " + action + " here. Use the gateway dashboard in "
+						+ recorded.name().toLowerCase(Locale.ROOT) + " mode instead.";
+		throw new BusinessException(message, HttpStatus.CONFLICT);
+	}
+
+	/**
+	 * Records how the payer paid, when the gateway said. A report that names no
+	 * method never erases one already recorded.
+	 */
+	private void applyInstrument(Payment payment, PaymentInstrument instrument) {
+		if (instrument == null || instrument.method() == null) {
+			return;
+		}
+		payment.setPaymentMethod(instrument.method());
+		payment.setPaymentMethodDetail(instrument.detail());
 	}
 
 	private PaymentProviderStrategy strategy(PaymentProvider provider) {

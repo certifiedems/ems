@@ -8,6 +8,7 @@ import com.ems.dto.request.PaymentRefundRequest;
 import com.ems.dto.request.PaymentVerificationRequest;
 import com.ems.dto.response.PaymentResponse;
 import com.ems.enums.PaymentStatus;
+import com.ems.service.payment.PaymentInstrument;
 
 public interface PaymentService {
 
@@ -30,13 +31,33 @@ public interface PaymentService {
      * <p>Idempotent. Gateways retry, and the browser callback races it, so being
      * called twice for one payment is the normal case rather than the
      * exceptional one.</p>
+     *
+     * <p>{@code instrument} is how the payer paid, where the callback said so;
+     * it is recorded with the outcome and may be null.</p>
      */
     void settleFromGatewayCallback(
             String providerOrderId,
             String providerReference,
             PaymentStatus status,
             BigDecimal paidAmount,
-            String paidCurrency);
+            String paidCurrency,
+            PaymentInstrument instrument);
+
+    /**
+     * Asks a payment's gateway what became of it, on an admin's request, and
+     * applies the answer where that is safe.
+     *
+     * <p>The recovery path for a payment whose browser callback and webhook both
+     * went missing. Only one transition is ever made: a PENDING or FAILED payment
+     * that the gateway confirms as captured, for the amount billed, becomes
+     * SUCCESS. Nothing is downgraded — the candidate may still be in checkout,
+     * and a payment marked failed here would turn away the webhook that later
+     * reports its capture. The payment method, and the gateway mode of a payment
+     * recorded before modes were tracked, are filled in from the same answer.</p>
+     *
+     * @return what was found, worded for the admin who asked
+     */
+    String reconcileWithGateway(String transactionId);
 
     List<PaymentResponse> getPaymentHistory(String email);
 
@@ -48,4 +69,10 @@ public interface PaymentService {
      * endpoint cannot be used to probe which ids exist.
      */
     PaymentReceiptContent downloadReceipt(String email, String transactionId);
+
+    /**
+     * Renders the receipt for any payment, for the admin console — typically to
+     * answer a candidate who cannot find their own.
+     */
+    PaymentReceiptContent downloadReceiptForAdmin(String transactionId);
 }

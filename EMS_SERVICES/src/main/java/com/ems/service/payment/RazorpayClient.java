@@ -81,6 +81,17 @@ public class RazorpayClient {
         return get("/payments/" + paymentId, "fetch payment");
     }
 
+    /**
+     * Every attempt made against an order, failed ones included.
+     *
+     * <p>Checkout lets a payer retry inside one order — a declined card, then
+     * UPI — so an order can carry several payments, of which at most one took
+     * the money.</p>
+     */
+    public JsonNode fetchOrderPayments(String orderId) {
+        return get("/orders/" + orderId + "/payments", "fetch order payments");
+    }
+
     public JsonNode createRefund(String paymentId, BigDecimal amount, Map<String, String> notes) {
         Map<String, Object> body = Map.of(
                 "amount", toMinorUnits(amount),

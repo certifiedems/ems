@@ -11,6 +11,7 @@ import com.ems.config.RazorpayProperties;
 import com.ems.dto.request.PaymentRefundRequest;
 import com.ems.dto.request.PaymentVerificationRequest;
 import com.ems.entity.Payment;
+import com.ems.enums.PaymentGatewayMode;
 import com.ems.enums.PaymentProvider;
 import com.ems.enums.PaymentStatus;
 import com.ems.exception.BusinessException;
@@ -57,6 +58,19 @@ public class RazorpayPaymentProviderStrategy implements PaymentProviderStrategy 
     @Override
     public boolean isSimulated() {
         return !properties.isConfigured();
+    }
+
+    /**
+     * Test or live is read off the key: Razorpay issues {@code rzp_test_} and
+     * {@code rzp_live_} keys, and the key is what decides which money a checkout
+     * touches.
+     */
+    @Override
+    public PaymentGatewayMode gatewayMode() {
+        if (!properties.isConfigured()) {
+            return PaymentGatewayMode.SIMULATED;
+        }
+        return properties.isTestKey() ? PaymentGatewayMode.TEST : PaymentGatewayMode.LIVE;
     }
 
     @Override
@@ -135,11 +149,11 @@ public class RazorpayPaymentProviderStrategy implements PaymentProviderStrategy 
          * captured amount, currency and order are the ones we billed — the
          * gateway is the authority, the browser is a courier.
          */
-        return new PaymentProviderResult(
-                settlementStatus(client().fetchPayment(paymentId), payment, orderId),
+        JsonNode gatewayPayment = client().fetchPayment(paymentId);
+        return PaymentProviderResult.readBack(
+                settlementStatus(gatewayPayment, payment, orderId),
                 paymentId,
-                null,
-                null);
+                PaymentInstrument.fromRazorpay(gatewayPayment));
     }
 
     @Override
@@ -166,6 +180,77 @@ public class RazorpayPaymentProviderStrategy implements PaymentProviderStrategy 
         log.info("Razorpay refund created: refundId={}, paymentId={}, transactionId={}",
                 text(refund, "id"), paymentId, payment.getTransactionId());
         return new PaymentProviderResult(PaymentStatus.REFUNDED, paymentId, null, null);
+    }
+
+    /**
+     * Reads an order's attempts back from Razorpay and reports the one that
+     * decides it.
+     *
+     * <p>That attempt is judged exactly as a browser callback's would be —
+     * amount, currency and order must all match what we billed — so checking a
+     * payment from the admin console can never grant access that verification
+     * would have refused.</p>
+     */
+    @Override
+    public PaymentProviderResult lookup(Payment payment) {
+        String orderId = payment.getProviderOrderId();
+        if (!properties.isConfigured() || orderId == null || orderId.isBlank()) {
+            return null;
+        }
+
+        JsonNode attempt = decisiveAttempt(
+                client().fetchOrderPayments(orderId).path("items"),
+                payment.getProviderReference());
+        if (attempt == null) {
+            // Checkout was opened against this order and nothing was ever paid.
+            return PaymentProviderResult.readBack(PaymentStatus.PENDING, payment.getProviderReference(), null);
+        }
+
+        return PaymentProviderResult.readBack(
+                settlementStatus(attempt, payment, orderId),
+                text(attempt, "id"),
+                PaymentInstrument.fromRazorpay(attempt));
+    }
+
+    /**
+     * The attempt that decides an order's outcome.
+     *
+     * <p>A capture wins outright. Checkout lets a payer retry inside one order,
+     * so a declined card followed by a successful UPI payment is one order with
+     * two attempts — and a payment already recorded as failed from the first may
+     * have been rescued by the second. Failing a capture, the attempt already
+     * recorded against the payment; then one still being captured; then the most
+     * recent.</p>
+     */
+    private static JsonNode decisiveAttempt(JsonNode attempts, String recordedPaymentId) {
+        JsonNode captured = null;
+        JsonNode recorded = null;
+        JsonNode authorized = null;
+        JsonNode latest = null;
+
+        for (JsonNode attempt : attempts) {
+            String status = text(attempt, "status");
+            if (captured == null && STATUS_CAPTURED.equals(status)) {
+                captured = attempt;
+            }
+            if (authorized == null && STATUS_AUTHORIZED.equals(status)) {
+                authorized = attempt;
+            }
+            if (recorded == null && recordedPaymentId != null && recordedPaymentId.equals(text(attempt, "id"))) {
+                recorded = attempt;
+            }
+            if (latest == null || attempt.path("created_at").asLong() > latest.path("created_at").asLong()) {
+                latest = attempt;
+            }
+        }
+
+        if (captured != null) {
+            return captured;
+        }
+        if (recorded != null) {
+            return recorded;
+        }
+        return authorized != null ? authorized : latest;
     }
 
     /**

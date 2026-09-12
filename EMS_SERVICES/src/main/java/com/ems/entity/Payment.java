@@ -3,6 +3,7 @@ package com.ems.entity;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import com.ems.enums.PaymentGatewayMode;
 import com.ems.enums.PaymentStatus;
 
 import jakarta.persistence.Column;
@@ -82,4 +83,30 @@ public class Payment extends BaseAuditEntity {
      */
     @Column(name = "provider_order_id", length = 100)
     private String providerOrderId;
+
+    /**
+     * How the payer paid — {@code UPI}, {@code CARD}, {@code NETBANKING},
+     * {@code WALLET} and so on — as the gateway reported it.
+     *
+     * <p>Chosen inside the gateway's checkout rather than in this app, so it is
+     * null until the gateway has reported on the payment, and stays null for
+     * simulated payments.</p>
+     */
+    @Column(name = "payment_method", length = 30)
+    private String paymentMethod;
+
+    /** The instrument within {@link #paymentMethod}: bank, wallet, UPI id, or card network and last four. */
+    @Column(name = "payment_method_detail", length = 100)
+    private String paymentMethodDetail;
+
+    /**
+     * Whether this payment was live money, a test-key checkout, or simulated.
+     *
+     * <p>Fixed when the payment is opened, from the credentials in force then;
+     * see {@link PaymentGatewayMode} for why it cannot be worked out later.
+     * Null only for gateway payments recorded before it was tracked.</p>
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "gateway_mode", length = 20)
+    private PaymentGatewayMode gatewayMode;
 }

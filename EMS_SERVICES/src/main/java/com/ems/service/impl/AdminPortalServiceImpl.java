@@ -1,6 +1,10 @@
 package com.ems.service.impl;
 
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
@@ -8,13 +12,16 @@ import java.util.Locale;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.ems.audit.AuditEvent;
 import com.ems.audit.AuditEventType;
 import com.ems.audit.AuditOutcome;
+import com.ems.dto.request.AdminPaymentFilter;
 import com.ems.dto.response.AdminAuditLogResponse;
+import com.ems.dto.response.AdminPaymentReconciliation;
 import com.ems.dto.response.AdminUserResponse;
 import com.ems.dto.response.AdminPaymentResponse;
 import com.ems.dto.response.AdminViolationResponse;
@@ -37,6 +44,8 @@ import com.ems.enums.CertificationApplicationStatus;
 import com.ems.enums.CertificationLevel;
 import com.ems.enums.ProctoringAction;
 import com.ems.enums.QuestionSeverity;
+import com.ems.enums.ReportFormat;
+import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.AuditLogRepository;
 import com.ems.repository.CertificationApplicationRepository;
@@ -51,7 +60,12 @@ import com.ems.service.AdminPortalService;
 import com.ems.service.AuditService;
 import com.ems.service.CertificateService;
 import com.ems.service.CertificateTemplate;
+import com.ems.service.PaymentReceiptContent;
+import com.ems.service.PaymentService;
 import com.ems.service.QuestionService;
+import com.ems.service.ReportFileContent;
+import com.ems.util.ReportCsvExporter;
+import com.ems.util.ReportExcelExporter;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -75,6 +89,7 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 	private final QuestionService questionService;
 	private final CertificateService certificateService;
 	private final AuditService auditService;
+	private final PaymentService paymentService;
 
 	@Override
 	public List<AdminUserResponse> searchUsers(String searchText, Boolean enabled) {
@@ -142,10 +157,89 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 	}
 
 	@Override
-	public List<AdminPaymentResponse> getAllPayments() {
-		return paymentRepository.findAllByOrderByCreatedDateDesc().stream()
+	public List<AdminPaymentResponse> searchPayments(AdminPaymentFilter filter) {
+		String paymentMethod = filter.paymentMethod() == null || filter.paymentMethod().isBlank()
+				? null
+				: filter.paymentMethod().trim().toUpperCase(Locale.ROOT);
+
+		return paymentRepository.searchForAdmin(
+				toLikePattern(filter.search()),
+				filter.status(),
+				filter.gatewayMode(),
+				paymentMethod,
+				toAuditClock(filter.from()),
+				toAuditClock(filter.to()))
+				.stream()
 				.map(this::toAdminPaymentResponse)
 				.toList();
+	}
+
+	@Override
+	public ReportFileContent exportPayments(AdminPaymentFilter filter, ReportFormat format, ZoneId zone) {
+		/*
+		 * Twenty-one columns of ids, names and timestamps do not fit a portrait
+		 * page: the shared PDF exporter would truncate and overprint them into a
+		 * document nobody could reconcile against. This report is for a
+		 * spreadsheet.
+		 */
+		if (format == ReportFormat.PDF) {
+			throw new BusinessException("The payment report is available as EXCEL or CSV", HttpStatus.BAD_REQUEST);
+		}
+
+		DateTimeFormatter timestamp = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(zone);
+		String inZone = " (" + zone.getId() + ")";
+		String[] headers = {
+				"Transaction ID", "Status", "Amount", "Currency", "Payment Mode", "Payment Mode Detail",
+				"Environment", "Provider", "Gateway Order ID", "Gateway Reference",
+				"Created At" + inZone, "Paid At" + inZone,
+				"Candidate Name", "Candidate User ID", "Candidate Email",
+				"Application ID", "Application Status", "Applied On",
+				"Exam Code", "Exam Name", "Certification Level" };
+
+		List<String[]> rows = searchPayments(filter).stream()
+				.map(payment -> new String[] {
+						payment.transactionId(),
+						nameOf(payment.paymentStatus()),
+						payment.amount() == null ? "" : payment.amount().toPlainString(),
+						payment.currency(),
+						payment.paymentMethod(),
+						payment.paymentMethodDetail(),
+						payment.gatewayMode() == null ? "UNKNOWN" : payment.gatewayMode().name(),
+						payment.provider(),
+						payment.providerOrderId(),
+						payment.providerReference(),
+						payment.createdAt() == null ? "" : timestamp.format(payment.createdAt()),
+						payment.paymentDate() == null ? "" : timestamp.format(payment.paymentDate()),
+						payment.candidateName(),
+						payment.userId(),
+						payment.candidateEmail(),
+						payment.applicationId() == null ? "" : String.valueOf(payment.applicationId()),
+						nameOf(payment.applicationStatus()),
+						payment.appliedOn() == null ? "" : payment.appliedOn().toString(),
+						payment.examCode(),
+						payment.examName(),
+						nameOf(payment.certificationLevel()) })
+				.toList();
+
+		byte[] content = format == ReportFormat.EXCEL
+				? ReportExcelExporter.export("Payments", headers, rows)
+				: ReportCsvExporter.export(headers, rows.stream().map(AdminPortalServiceImpl::defuseFormulas).toList());
+		return ReportFileContent.of(content, format, "payment-report-" + LocalDate.now(zone));
+	}
+
+	@Override
+	@Transactional
+	@CacheEvict(cacheNames = { "reports", "dashboard" }, allEntries = true)
+	public AdminPaymentReconciliation reconcilePayment(String transactionId) {
+		String outcome = paymentService.reconcileWithGateway(transactionId);
+		Payment payment = paymentRepository.findByTransactionId(transactionId)
+				.orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+		return new AdminPaymentReconciliation(outcome, toAdminPaymentResponse(payment));
+	}
+
+	@Override
+	public PaymentReceiptContent downloadPaymentReceipt(String transactionId) {
+		return paymentService.downloadReceiptForAdmin(transactionId);
 	}
 
 	@Override
@@ -311,8 +405,13 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 				payment.getAmount(),
 				payment.getCurrency(),
 				payment.getProvider(),
+				payment.getPaymentMethod(),
+				payment.getPaymentMethodDetail(),
+				payment.getGatewayMode(),
+				fromAuditClock(payment.getCreatedDate()),
 				payment.getPaymentDate(),
 				payment.getProviderReference(),
+				payment.getProviderOrderId(),
 				application == null ? null : application.getId(),
 				application == null ? null : application.getApplicationStatus(),
 				application == null ? null : application.getAppliedOn(),
@@ -323,6 +422,44 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 				exam.getExamCode(),
 				exam.getExamName(),
 				exam.getCertificationLevel());
+	}
+
+	/**
+	 * A filter bound on the clock {@code created_date} is written in.
+	 *
+	 * <p>Spring's auditing stamps that column with {@code LocalDateTime.now()} —
+	 * the server's default zone, with the zone discarded — so a bound has to be
+	 * turned into the same wall time to compare like with like.</p>
+	 */
+	private static LocalDateTime toAuditClock(Instant instant) {
+		return instant == null ? null : LocalDateTime.ofInstant(instant, ZoneId.systemDefault());
+	}
+
+	private static Instant fromAuditClock(LocalDateTime auditTimestamp) {
+		return auditTimestamp == null ? null : auditTimestamp.atZone(ZoneId.systemDefault()).toInstant();
+	}
+
+	private static String nameOf(Enum<?> value) {
+		return value == null ? "" : value.name();
+	}
+
+	/**
+	 * Neutralises spreadsheet formulas in a CSV row.
+	 *
+	 * <p>A CSV cell has no type, so a spreadsheet evaluates any cell that opens
+	 * with {@code =}, {@code +}, {@code -} or {@code @} — and names and emails are
+	 * typed in by candidates. A leading apostrophe makes the cell literal text.
+	 * The Excel export needs none of this: every cell is written as a string,
+	 * which is never evaluated.</p>
+	 */
+	private static String[] defuseFormulas(String[] row) {
+		String[] safe = new String[row.length];
+		for (int i = 0; i < row.length; i++) {
+			String cell = row[i];
+			boolean formulaLike = cell != null && !cell.isEmpty() && "=+-@\t\r".indexOf(cell.charAt(0)) >= 0;
+			safe[i] = formulaLike ? "'" + cell : cell;
+		}
+		return safe;
 	}
 
 	private AdminViolationResponse toAdminViolationResponse(Violation violation) {
