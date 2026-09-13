@@ -20,16 +20,20 @@ import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettingsRounde
 import GroupIcon from '@mui/icons-material/GroupRounded'
 import QuizIcon from '@mui/icons-material/QuizRounded'
 import GavelIcon from '@mui/icons-material/GavelRounded'
+import TuneIcon from '@mui/icons-material/TuneRounded'
 import EventNoteIcon from '@mui/icons-material/EventNoteRounded'
 import DateRangeIcon from '@mui/icons-material/DateRangeRounded'
+import ReplayIcon from '@mui/icons-material/ReplayRounded'
 import TableChartIcon from '@mui/icons-material/TableChartRounded'
 import PaidIcon from '@mui/icons-material/PaidRounded'
 import HistoryRounded from '@mui/icons-material/HistoryRounded'
+import MailOutlineIcon from '@mui/icons-material/MailOutlineRounded'
 import { logout } from '../../store/slices/authSlice'
 import { authAPI } from '../../api/authAPI'
 import { useIdleTimeout, clearIdleStamp } from '../../hooks/useIdleTimeout'
 import { useProfilePhoto } from '../../contexts/ProfilePhotoContext'
 import SessionTimeoutDialog from '../common/SessionTimeoutDialog'
+import SupportEmailLink from '../common/SupportEmailLink'
 import PcbBackdrop from '../brand/PcbBackdrop'
 import { ChipLogo } from '../brand/BrandMark'
 import { tokens, fonts, gradients } from '../../styles/tokens'
@@ -65,10 +69,14 @@ const LayoutWrapper = ({ children }) => {
     // Sits directly under Exams: it is the same subject seen from the other
     // side — what an exam is, then when it can be sat.
     { label: 'Booking Windows', icon: <DateRangeIcon />, path: '/admin/booking-windows' },
+    // Also about sitting an exam: how many times one payment lets a candidate try.
+    { label: 'Exam Attempts', icon: <ReplayIcon />, path: '/admin/exam-attempts' },
     { label: 'Questions', icon: <QuizIcon />, path: '/admin/questions' },
     { label: 'Payments', icon: <PaidIcon />, path: '/admin/payments' },
     { label: 'Exam Reports', icon: <TableChartIcon />, path: '/admin/exam-reports' },
     { label: 'Violations', icon: <GavelIcon />, path: '/admin/violations' },
+    // Under Violations: what was recorded, then the rules that decide what is.
+    { label: 'Proctoring Rules', icon: <TuneIcon />, path: '/admin/proctoring-rules' },
     { label: 'Audit Log', icon: <HistoryRounded />, path: '/admin/audit-log' },
     { label: 'Reports', icon: <AnalyticsIcon />, path: '/admin/reports' }
   ]
@@ -181,7 +189,7 @@ const LayoutWrapper = ({ children }) => {
           <Typography
             sx={{ fontFamily: fonts.mono, fontSize: 8.5, letterSpacing: '1.6px', color: tokens.copper }}
           >
-            ENGINEER BOARD
+            ENGINEERS BOARD
           </Typography>
         </Box>
       </Box>
@@ -239,6 +247,31 @@ const LayoutWrapper = ({ children }) => {
       </List>
 
       <Box sx={{ flexGrow: 1 }} />
+      {/* Candidates only: admins are the people who answer this inbox. */}
+      {!isAdmin && (
+        <Box
+          sx={{
+            mx: 1.5,
+            mb: 1.5,
+            p: 1.25,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 1,
+            borderRadius: '11px',
+            background: 'rgba(192,138,46,.08)',
+            border: '1px solid rgba(192,138,46,.26)',
+          }}
+        >
+          <MailOutlineIcon sx={{ flex: 'none', mt: '1px', fontSize: 17, color: tokens.copperLt }} />
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ fontSize: 12, fontWeight: 700, lineHeight: 1.3 }}>Need help?</Typography>
+            <Typography sx={{ mt: 0.25, fontSize: 11, lineHeight: 1.45, color: tokens.body }}>
+              Facing an issue? Drop us an email.
+            </Typography>
+            <SupportEmailLink sx={{ display: 'block', mt: 0.5, fontSize: 11.5 }} />
+          </Box>
+        </Box>
+      )}
       <Divider />
       <Box sx={{ p: 1.5, display: 'flex', alignItems: 'center', gap: 1.25 }}>
         <Avatar

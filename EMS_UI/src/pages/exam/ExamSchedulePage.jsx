@@ -7,12 +7,16 @@ import {
 } from '@mui/material'
 import { examAPI } from '../../api/examAPI'
 import { userAPI } from '../../api/userAPI'
+import { proctoringAPI } from '../../api/proctoringAPI'
 import PageHeader from '../../components/common/PageHeader'
+import SupportEmailLink from '../../components/common/SupportEmailLink'
 import PcbDateField from '../../components/common/PcbDateField'
 import SyllabusPanel from '../../components/syllabus/SyllabusPanel'
 import DeviceCheckPanel from '../../components/exam/proctoring/DeviceCheckPanel'
 import { useDeviceCheck } from '../../hooks/useDeviceCheck'
 import { formatCountdown, formatExamClock } from '../../utils/examJourney'
+import { SUPPORT_EMAIL } from '../../config/support'
+import { BUILT_IN_POLICY, isMonitored, requiresFullscreen, requiresScreenShare } from '../../utils/proctoringRules'
 import { tokens, fonts, gradients, shadows } from '../../styles/tokens'
 import EventAvailableIcon from '@mui/icons-material/EventAvailableRounded'
 import EventBusyIcon from '@mui/icons-material/EventBusyRounded'
@@ -32,8 +36,6 @@ import WifiRoundedIcon from '@mui/icons-material/WifiRounded'
 import FullscreenRoundedIcon from '@mui/icons-material/FullscreenRounded'
 import ScreenShareRoundedIcon from '@mui/icons-material/ScreenShareRounded'
 import VolumeOffRoundedIcon from '@mui/icons-material/VolumeOffRounded'
-
-const maxViolationsAllowed = 3
 
 /** Card face shared by every panel on this screen. */
 const panelSx = {
@@ -132,16 +134,19 @@ const sessionRequirements = [
     desc: 'Required for continuous face monitoring for the whole sitting.'
   },
   {
+    key: 'microphone',
     icon: MicRoundedIcon,
     title: 'Microphone enabled',
     desc: 'Audio stays on throughout; a second voice in the room is a violation.'
   },
   {
+    key: 'screenShare',
     icon: ScreenShareRoundedIcon,
     title: 'Screen sharing',
     desc: 'You will be asked to share your entire screen before the exam opens.'
   },
   {
+    key: 'fullscreen',
     icon: FullscreenRoundedIcon,
     title: 'Fullscreen browser',
     desc: 'The exam runs in a locked fullscreen tab; other apps must stay closed.'
@@ -557,6 +562,12 @@ const ExamSchedulePage = () => {
   // and with it the syllabus to show — has to be resolved from the dashboard.
   const [level, setLevel] = useState(null)
   const [levelLoading, setLevelLoading] = useState(true)
+  /**
+   * The proctoring rules this application's exam runs under, so the limit and
+   * the requirements shown here are the ones the exam screen will enforce.
+   * Starts at the built-in rules, and keeps them if the rules cannot be loaded.
+   */
+  const [proctoringPolicy, setProctoringPolicy] = useState(BUILT_IN_POLICY)
 
   useEffect(() => {
     let mounted = true
@@ -595,6 +606,23 @@ const ExamSchedulePage = () => {
         console.error('Failed to resolve certification level for syllabus', err)
       } finally {
         if (mounted) setLevelLoading(false)
+      }
+    })()
+    return () => { mounted = false }
+  }, [applicationId])
+
+  useEffect(() => {
+    let mounted = true
+    ;(async () => {
+      try {
+        const res = await proctoringAPI.getPolicyForApplication(applicationId)
+        if (mounted && res.data.data) {
+          setProctoringPolicy(res.data.data)
+        }
+      } catch (err) {
+        // The built-in rules stay on screen. The exam page loads the rules again
+        // for itself, so nothing that is enforced depends on this read.
+        console.error('Failed to load proctoring rules', err)
       }
     })()
     return () => { mounted = false }
@@ -751,7 +779,7 @@ const ExamSchedulePage = () => {
      */
     if (bookingClosed) {
       setError(`This exam stopped taking bookings on ${formatSlot(bookingWindow.closesAt)}. `
-        + 'Contact support to have the window reopened — your payment stays on this application.')
+        + `Contact support at ${SUPPORT_EMAIL} to have the window reopened — your payment stays on this application.`)
       return
     }
     const pickedAt = new Date(scheduledTime).getTime()
@@ -836,13 +864,39 @@ const ExamSchedulePage = () => {
    * one being void, and the server will still start it.
    */
   const showWizard = !showPicker && !showBookingClosed && !missed
+
+  /*
+   * What this exam's rules actually enforce. Screen sharing and fullscreen are
+   * only demanded while their violations are monitored, and a list promising
+   * either when they are not would send the candidate to prepare for a prompt
+   * that never comes.
+   */
+  const strikeLimit = proctoringPolicy.strikeLimit
+  const screenShareRequired = requiresScreenShare(proctoringPolicy)
+  const fullscreenRequired = requiresFullscreen(proctoringPolicy)
+  const enforcedHere = (key) =>
+    (key !== 'screenShare' || screenShareRequired) && (key !== 'fullscreen' || fullscreenRequired)
+  const requirements = sessionRequirements
+    .filter((req) => enforcedHere(req.key))
+    .map((req) => (req.key === 'microphone' && !isMonitored(proctoringPolicy, 'VOICE_DETECTED')
+      ? { ...req, desc: 'Audio stays on for the whole sitting.' }
+      : req))
+  const checklistRows = readinessRows.filter((row) => enforcedHere(row.key))
+  const staysOnSentence = `${screenShareRequired ? 'Camera, microphone and screen sharing' : 'Camera and microphone'} must stay on${
+    fullscreenRequired ? ' with this tab in fullscreen focus' : ''}.`
+  const startPrompts = [screenShareRequired && 'screen sharing', fullscreenRequired && 'fullscreen'].filter(Boolean)
+  const startPromptsSentence = startPrompts.length
+    ? `${startPrompts.join(' and ').replace(/^\w/, (c) => c.toUpperCase())} ${startPrompts.length === 1 ? 'is' : 'are'} requested the moment you begin.`
+    : 'The exam opens the moment you begin.'
+  const violationsEndAttempt = `${strikeLimit} violation${strikeLimit === 1 ? '' : 's'} end${strikeLimit === 1 ? 's' : ''} the attempt`
+
   const blockedChecks = readiness
-    ? readinessRows.filter((row) => readiness[row.key]?.state === 'BLOCKED')
+    ? checklistRows.filter((row) => readiness[row.key]?.state === 'BLOCKED')
     : []
   const readyChecks = readiness
-    ? readinessRows.filter((row) => readiness[row.key]?.state === 'READY').length
+    ? checklistRows.filter((row) => readiness[row.key]?.state === 'READY').length
     : 0
-  const systemCheckPct = Math.round((readyChecks / readinessRows.length) * 100)
+  const systemCheckPct = Math.round((readyChecks / checklistRows.length) * 100)
   /** The browser's own verdict on the two devices the exam cannot run without. */
   const mediaGranted = readiness?.camera?.state === 'READY' && readiness?.microphone?.state === 'READY'
   const mediaBlocked = readiness?.camera?.state === 'BLOCKED' || readiness?.microphone?.state === 'BLOCKED'
@@ -870,7 +924,7 @@ const ExamSchedulePage = () => {
         action={
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
             <Chip color="primary" variant="outlined" icon={<ShieldRoundedIcon />} label="AI Proctored Session" />
-            <Chip color="warning" variant="outlined" label={`Max violations: ${maxViolationsAllowed}`} />
+            <Chip color="warning" variant="outlined" label={`Max violations: ${strikeLimit}`} />
             <Chip color="info" variant="outlined" label="Camera + Microphone Mandatory" />
           </Stack>
         }
@@ -1086,7 +1140,7 @@ const ExamSchedulePage = () => {
                   <Typography sx={{ fontSize: 15, fontWeight: 800, mb: 1 }}>
                     Session requirements
                   </Typography>
-                  {sessionRequirements.map((req, index) => {
+                  {requirements.map((req, index) => {
                     const Icon = req.icon
                     return (
                       <Box key={req.title}>
@@ -1113,7 +1167,7 @@ const ExamSchedulePage = () => {
                             </Typography>
                           </Box>
                         </Stack>
-                        {index < sessionRequirements.length - 1 && (
+                        {index < requirements.length - 1 && (
                           <Divider sx={{ borderColor: 'rgba(150,195,172,.1)' }} />
                         )}
                       </Box>
@@ -1156,8 +1210,9 @@ const ExamSchedulePage = () => {
               <Typography sx={{ fontSize: 13, color: '#93AC9E', mb: 3 }}>
                 {level ? `The ${level} exam` : 'This exam'} stopped taking bookings on{' '}
                 <strong style={{ color: '#CFE2D8' }}>{formatSlot(bookingWindow.closesAt)}</strong>, so
-                application #{applicationId} cannot be scheduled. Contact support to have the window
-                reopened — your payment stays on this application and no new payment is needed.
+                application #{applicationId} cannot be scheduled. Contact support at{' '}
+                <SupportEmailLink subject={`Reopen booking window: application #${applicationId}`} /> to have
+                the window reopened — your payment stays on this application and no new payment is needed.
               </Typography>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="center">
                 <Button variant="outlined" size="large" onClick={() => navigate('/exams')}>
@@ -1207,8 +1262,9 @@ const ExamSchedulePage = () => {
                   */}
                 {bookingClosed
                   ? <> This exam then stopped taking bookings on <strong style={{ color: '#CFE2D8' }}>{formatSlot(bookingWindow.closesAt)}</strong>,
-                    so there is no later slot to move to. Contact support to have the window
-                    reopened — your payment stays on this application.</>
+                    so there is no later slot to move to. Contact support at{' '}
+                    <SupportEmailLink subject={`Reopen booking window: application #${applicationId}`} /> to have
+                    the window reopened — your payment stays on this application.</>
                   : <> Pick a new time — your payment still stands.</>}
               </Typography>
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} justifyContent="center">
@@ -1287,9 +1343,9 @@ const ExamSchedulePage = () => {
                   >
                     <WarningAmberRoundedIcon sx={{ fontSize: 18, color: tokens.copperLt, flex: 'none', mt: '1px' }} />
                     <Typography sx={{ fontSize: 12.5, lineHeight: 1.55, color: '#DCC79A' }}>
-                      <strong style={{ color: tokens.copperLt }}>{maxViolationsAllowed} violations</strong> auto-terminates
-                      and invalidates this attempt. Camera, microphone and screen sharing must stay on with this tab in
-                      fullscreen focus.
+                      <strong style={{ color: tokens.copperLt }}>{strikeLimit} violation{strikeLimit === 1 ? '' : 's'}</strong>{' '}
+                      terminate{strikeLimit === 1 ? 's' : ''} and invalidate{strikeLimit === 1 ? 's' : ''} this attempt.{' '}
+                      {staysOnSentence}
                     </Typography>
                   </Stack>
 
@@ -1434,7 +1490,7 @@ const ExamSchedulePage = () => {
                       </Typography>
 
                       <Stack spacing={1.75}>
-                        {readinessRows.map((row) => (
+                        {checklistRows.map((row) => (
                           <ChecklistRow
                             key={row.key}
                             icon={row.icon}
@@ -1611,7 +1667,7 @@ const ExamSchedulePage = () => {
                       <TimelineStep
                         number={1}
                         title="Proctoring policy"
-                        desc={`Acknowledged — ${maxViolationsAllowed} violations end the attempt.`}
+                        desc={`Acknowledged — ${violationsEndAttempt}.`}
                         state="done"
                       />
                       <TimelineStep
@@ -1635,7 +1691,7 @@ const ExamSchedulePage = () => {
                       <TimelineStep
                         number={4}
                         title="Start exam"
-                        desc="Screen sharing and fullscreen are requested the moment you begin."
+                        desc={startPromptsSentence}
                         state={readyToStart ? 'active' : 'pending'}
                         last
                       />

@@ -87,9 +87,9 @@ public class PdfBoxPaymentReceiptPdfGeneratorService implements PaymentReceiptPd
 	private void applyMetadata(PDDocument document, PaymentReceiptData data) {
 		PDDocumentInformation info = document.getDocumentInformation();
 		info.setTitle("Payment Receipt " + data.transactionId());
-		info.setAuthor("Certified EMS Engineer Board");
+		info.setAuthor("Certified EMS Engineers Board");
 		info.setSubject(data.description());
-		info.setCreator("Certified EMS Engineer Board");
+		info.setCreator("Certified EMS Engineers Board");
 		document.setDocumentInformation(info);
 	}
 
@@ -103,7 +103,7 @@ public class PdfBoxPaymentReceiptPdfGeneratorService implements PaymentReceiptPd
 		canvas.line(MARGIN + 11.5f, 55f, MARGIN + 19f, 43f, 2.4f, INK);
 
 		canvas.text(PDType1Font.HELVETICA_BOLD, 13f, 1.6f, CREAM, MARGIN + 38f, 47f, "CERTIFIED EMS");
-		canvas.text(PDType1Font.HELVETICA, 6.5f, 1.5f, GOLD_LIGHT, MARGIN + 39f, 60f, "ENGINEER BOARD");
+		canvas.text(PDType1Font.HELVETICA, 6.5f, 1.5f, GOLD_LIGHT, MARGIN + 39f, 60f, "ENGINEERS BOARD");
 
 		canvas.rightText(PDType1Font.HELVETICA_BOLD, 12f, 2.4f, GOLD_LIGHT, PAGE_W - MARGIN, 48f, "PAYMENT RECEIPT");
 		canvas.rightText(PDType1Font.HELVETICA, 6.5f, 1.2f, FAINT, PAGE_W - MARGIN, 62f,

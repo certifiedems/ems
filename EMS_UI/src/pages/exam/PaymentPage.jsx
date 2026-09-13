@@ -45,6 +45,12 @@ const PaymentPage = () => {
   const [done, setDone] = useState(false)
   const [applicationLevel, setApplicationLevel] = useState('L1')
   /*
+   * How many attempts this payment will cover. Shown before the candidate pays
+   * because it changes what a failed attempt costs them; null until known, and
+   * left unsaid rather than guessed if it cannot be loaded.
+   */
+  const [attemptsPerPayment, setAttemptsPerPayment] = useState(null)
+  /*
    * The fee is non-transferable and the attempt it buys can be lost to a
    * violation, so the terms are not fine print the candidate can pay past: the
    * CTA stays disabled until this is ticked.
@@ -70,6 +76,13 @@ const PaymentPage = () => {
         }
         if (app.certificationLevel) {
           setApplicationLevel(app.certificationLevel)
+          // Not awaited: the page works without it, and the line it feeds stays
+          // hidden if it cannot be loaded.
+          examAPI.getAttemptAllowance(app.certificationLevel)
+            .then((allowance) => {
+              if (mounted) setAttemptsPerPayment(allowance.data.data?.attemptsPerPayment ?? null)
+            })
+            .catch(() => {})
         }
         /*
          * One payment buys one application, and it stays bought until that
@@ -145,7 +158,7 @@ const PaymentPage = () => {
         orderId: initiated.providerOrderId,
         amount: initiated.amount ?? amount,
         currency: initiated.currency || currency,
-        name: 'Certified EMS Engineer',
+        name: 'Certified EMS Engineers',
         description: initiated.description || `${applicationLevel} certification exam fee`,
         prefill: {
           name: [user?.firstName, user?.lastName].filter(Boolean).join(' '),
@@ -285,6 +298,21 @@ const PaymentPage = () => {
                   <Typography color="text.secondary">Currency</Typography>
                   <Typography fontWeight={600}>{currency}</Typography>
                 </Stack>
+
+                {attemptsPerPayment != null && (
+                  <Stack direction="row" justifyContent="space-between" sx={{ mb: 1 }}>
+                    <Typography color="text.secondary">Attempts included</Typography>
+                    <Typography sx={{ fontFamily: fonts.mono, fontWeight: 700 }}>{attemptsPerPayment}</Typography>
+                  </Stack>
+                )}
+
+                {attemptsPerPayment > 1 && (
+                  <Alert severity="info" variant="outlined" sx={{ mt: 2 }}>
+                    If you do not pass, or an attempt is ended for proctoring violations, you can take the exam
+                    again up to {attemptsPerPayment - 1} more time{attemptsPerPayment === 2 ? '' : 's'} without
+                    paying again. Each attempt has different questions.
+                  </Alert>
+                )}
 
                 <Divider sx={{ my: 2 }} />
 

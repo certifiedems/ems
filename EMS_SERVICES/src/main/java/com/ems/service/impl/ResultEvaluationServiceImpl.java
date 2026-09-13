@@ -30,7 +30,6 @@ import com.ems.entity.CertificationApplication;
 import com.ems.entity.ExamAttempt;
 import com.ems.entity.ExamSession;
 import com.ems.entity.Question;
-import com.ems.entity.User;
 import com.ems.enums.CertificationApplicationStatus;
 import com.ems.enums.CertificationStatus;
 import com.ems.enums.ExamStatus;
@@ -45,6 +44,7 @@ import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.QuestionRepository;
 import com.ems.service.AuditService;
 import com.ems.service.ResultEvaluationService;
+import com.ems.util.ExamAttemptAllowance;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -235,11 +235,26 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 		return toResultResponse(attempt);
 	}
 
-	private void updateApplicationStatus(ExamSession session, ResultStatus resultStatus) {
-		User user = session.getUser();
-		CertificationApplication application = certificationApplicationRepository
-				.findTopByUserAndExamOrderByAppliedOnDescIdDesc(user, session.getExam())
+	/**
+	 * The application this attempt was sat under: the session's own link, or —
+	 * for a session written before sessions carried one — the candidate's latest
+	 * application for the exam.
+	 *
+	 * <p>The link comes first because a retake is a newer application for the
+	 * same exam. Once one exists, "the latest application" is no longer this
+	 * attempt's, and reading it would put this attempt's verdict on the retake.</p>
+	 */
+	private CertificationApplication resolveApplication(ExamSession session) {
+		if (session.getCertificationApplication() != null) {
+			return session.getCertificationApplication();
+		}
+		return certificationApplicationRepository
+				.findTopByUserAndExamOrderByAppliedOnDescIdDesc(session.getUser(), session.getExam())
 				.orElse(null);
+	}
+
+	private void updateApplicationStatus(ExamSession session, ResultStatus resultStatus) {
+		CertificationApplication application = resolveApplication(session);
 
 		if (application == null) {
 			return;
@@ -306,17 +321,12 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 	}
 
 	private ExamResultResponse toResultResponse(ExamAttempt attempt, BigDecimal totalMarks) {
-		Long applicationId = certificationApplicationRepository
-				.findTopByUserAndExamOrderByAppliedOnDescIdDesc(
-						attempt.getExamSession().getUser(),
-						attempt.getExamSession().getExam())
-				.map(app -> app.getId())
-				.orElse(null);
+		CertificationApplication application = resolveApplication(attempt.getExamSession());
 
 		return new ExamResultResponse(
 				attempt.getId(),
 				attempt.getExamSession().getId(),
-				applicationId,
+				application == null ? null : application.getId(),
 				attempt.getExamSession().getExam().getExamCode(),
 				attempt.getTotalQuestions(),
 				attempt.getAttemptedQuestions(),
@@ -326,7 +336,11 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 				attempt.getObtainedMarks(),
 				attempt.getPercentage(),
 				attempt.getResultStatus(),
-				attempt.getSubmittedAt());
+				attempt.getSubmittedAt(),
+				application == null ? 1 : ExamAttemptAllowance.attemptNumber(application),
+				application == null ? 1 : ExamAttemptAllowance.attemptsAllowed(application),
+				application == null ? 0 : ExamAttemptAllowance.attemptsRemaining(application),
+				application != null && ExamAttemptAllowance.retakeAvailable(application));
 	}
 
 	private BigDecimal resolveTotalMarks(ExamSession session) {

@@ -7,6 +7,8 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,6 +18,7 @@ import java.util.UUID;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,6 +35,7 @@ import com.ems.dto.request.PaymentVerificationRequest;
 import com.ems.dto.request.QuestionAnswerSubmissionRequest;
 import com.ems.dto.request.WorkflowExamScheduleRequest;
 import com.ems.dto.response.CertificationEligibilityResponse;
+import com.ems.dto.response.ExamAttemptAllowanceResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamQuestionPayloadResponse;
 import com.ems.dto.response.ExamSessionQuestionResponse;
@@ -62,8 +66,11 @@ import com.ems.repository.QuestionRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.AuditService;
 import com.ems.service.CertificationJourneyService;
+import com.ems.service.ExamAttemptPolicyService;
 import com.ems.service.ExamWorkflowService;
 import com.ems.service.PaymentService;
+import com.ems.service.ProctoringPolicyService;
+import com.ems.util.ExamAttemptAllowance;
 import com.ems.util.ExamQuestionBlueprint;
 import com.ems.util.ExamStartWindow;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -82,7 +89,10 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 
 	/** Fallback when an exam carries no duration; matches the client's old default. */
 	private static final int DEFAULT_EXAM_DURATION_MINUTES = 60;
-	private static final String VIOLATION_RESTART_MESSAGE = "Exam was terminated after 3 violations. Re-apply and complete payment to restart from question 1.";
+	private static final String VIOLATION_RESTART_MESSAGE = "Exam was terminated for reaching the proctoring violation limit. Re-apply and complete payment to restart from question 1.";
+
+	/** Closes a refusal of a free retake: nothing is lost by waiting for the exam to reopen. */
+	private static final String RETAKE_KEPT_ADVICE = "Contact support to have it reopened — your remaining attempts are kept.";
 
 	private static final TypeReference<List<Long>> LONG_LIST_TYPE = new TypeReference<>() {
 	};
@@ -106,6 +116,16 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	private final PaymentService paymentService;
 	private final ObjectMapper objectMapper;
 	private final AuditService auditService;
+	private final ProctoringPolicyService proctoringPolicyService;
+	private final ExamAttemptPolicyService examAttemptPolicyService;
+
+	@Override
+	@Transactional(readOnly = true)
+	public ExamAttemptAllowanceResponse getAttemptAllowance(CertificationLevel certificationLevel) {
+		return new ExamAttemptAllowanceResponse(
+				certificationLevel,
+				examAttemptPolicyService.attemptsPerPayment(certificationLevel));
+	}
 
 	@Override
 	@Transactional(readOnly = true)
@@ -373,8 +393,7 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 			throw new BusinessException(windowIssue, HttpStatus.BAD_REQUEST);
 		}
 
-		List<Question> selectedQuestions = buildProportionalQuestionSet(
-				application.getExam(), application.getCertificationLevel());
+		List<Question> selectedQuestions = buildProportionalQuestionSet(application);
 		Collections.shuffle(selectedQuestions);
 
 		List<Long> selectedIds = selectedQuestions.stream().map(Question::getId).toList();
@@ -387,6 +406,9 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				.sessionStatus(ExamStatus.IN_PROGRESS)
 				.violationCount(0)
 				.selectedQuestionIdsJson(writeLongList(selectedIds))
+				// The rules this attempt will be judged by, fixed now: a later change
+				// by an administrator reaches the attempts that start after it.
+				.proctoringPolicyJson(proctoringPolicyService.snapshotForExam(application.getExam().getId()))
 				.build();
 
 		ExamSession savedSession = examSessionRepository.save(session);
@@ -419,7 +441,9 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				firstQuestion,
 				examDurationSeconds(application),
 				false,
-				null);
+				null,
+				ExamAttemptAllowance.attemptNumber(application),
+				ExamAttemptAllowance.attemptsAllowed(application));
 	}
 
 	/**
@@ -433,15 +457,14 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	 * it costs the candidate nothing they did not already have, because the clock
 	 * still runs from the original start and the strikes are still on the session.
 	 * Anything else is an attempt that reached an end: terminated by proctoring,
-	 * or submitted and scored. Those are spent, and the way back is a new
-	 * application and a new payment.</p>
+	 * or submitted and scored. Those are spent. The way back is the retake the
+	 * payment still covers, if it covers one, or a new application and a new
+	 * payment.</p>
 	 */
 	private ExamStartResponse resumeOrRefuse(CertificationApplication application, ExamSession existingSession) {
 		if (existingSession.getSessionStatus() != ExamStatus.IN_PROGRESS) {
 			throw new BusinessException(
-					existingSession.getSessionStatus() == ExamStatus.INVALIDATED
-							? "This attempt was terminated by proctoring. Re-apply and complete payment to restart from question 1."
-							: "This application has already been used for an exam attempt. Re-apply and complete payment to sit it again.",
+					spentAttemptMessage(application, existingSession.getSessionStatus()),
 					HttpStatus.BAD_REQUEST);
 		}
 
@@ -474,7 +497,9 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				toQuestionPayload(firstQuestion),
 				remainingSeconds,
 				true,
-				savedProgress);
+				savedProgress,
+				ExamAttemptAllowance.attemptNumber(application),
+				ExamAttemptAllowance.attemptsAllowed(application));
 	}
 
 	/** Time left in an attempt, measured from when its session began. */
@@ -690,57 +715,115 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 		 * application linked to no exam — payable, and then permanently stuck at
 		 * "Application is not linked to an exam".
 		 */
+		/*
+		 * A payment that still covers another sitting is used before anyone is
+		 * asked to pay again. Decided after the checks every re-application
+		 * shares, so a free retake is held to the same eligibility and the same
+		 * one-open-application rule as a paid one.
+		 */
+		boolean retake = ExamAttemptAllowance.retakeAvailable(failedApplication);
+		if (retake) {
+			requireLatestAttemptOnPayment(failedApplication);
+		}
+
 		Exam exam = failedApplication.getExam();
 		if (exam == null || !exam.isPublished() || exam.getExamStatus() != ExamStatus.SCHEDULED) {
 			throw new BusinessException(
 					"The " + failedApplication.getCertificationLevel()
-							+ " exam is not open for applications at the moment. Contact support before"
-							+ " paying again — nothing has been charged.",
+							+ " exam is not open for applications at the moment. "
+							+ (retake
+									? RETAKE_KEPT_ADVICE
+									: "Contact support before paying again — nothing has been charged."),
 					HttpStatus.BAD_REQUEST);
 		}
-		String bookingIssue = evaluateBookingWindowIssue(exam);
+		String bookingIssue = retake
+				? evaluateBookingWindowIssue(exam, RETAKE_KEPT_ADVICE)
+				: evaluateBookingWindowIssue(exam);
 		if (bookingIssue != null) {
 			throw new BusinessException(bookingIssue, HttpStatus.BAD_REQUEST);
 		}
 
-		CertificationApplication newApplication = CertificationApplication.builder()
-				.user(user)
-				.exam(exam)
-				.certificationLevel(failedApplication.getCertificationLevel())
-				.applicationStatus(CertificationApplicationStatus.APPLIED)
-				.paymentStatus(PaymentStatus.PENDING)
-				.appliedOn(LocalDate.now())
-				.remarks("Re-application after " + currentStatus + " on application #" + failedApplicationId)
-				.build();
+		CertificationApplication saved = retake
+				? saveRetake(buildRetake(user, exam, failedApplication))
+				: certificationApplicationRepository.save(CertificationApplication.builder()
+						.user(user)
+						.exam(exam)
+						.certificationLevel(failedApplication.getCertificationLevel())
+						.applicationStatus(CertificationApplicationStatus.APPLIED)
+						.paymentStatus(PaymentStatus.PENDING)
+						.appliedOn(LocalDate.now())
+						.remarks("Re-application after " + currentStatus + " on application #" + failedApplicationId)
+						.build());
 
-		CertificationApplication saved = certificationApplicationRepository.save(newApplication);
-
-		ExamWorkflowApplicationResponse response = new ExamWorkflowApplicationResponse(
-				saved.getId(),
-				user.getUserId(),
-				exam == null ? null : exam.getId(),
-				exam == null ? null : exam.getExamCode(),
-				saved.getCertificationLevel(),
-				saved.getApplicationStatus(),
-				saved.getPaymentStatus(),
-				saved.getAppliedOn(),
-				saved.getScheduledExamTime(),
-				ExamStartWindow.opensAt(saved.getScheduledExamTime()),
-				ExamStartWindow.closesAt(saved.getScheduledExamTime()),
-				exam == null ? null : exam.getScheduledStartTime(),
-				exam == null ? null : exam.getScheduledEndTime(),
-				saved.getRemarks(),
-				false,
-				isViolationRestartRequired(saved),
-				resolveRestartMessage(saved));
-
-		log.info("re-apply userId={} level={} sourceApplicationId={} newApplicationId={}",
+		log.info("re-apply userId={} level={} sourceApplicationId={} newApplicationId={} retake={} attempt={}/{}",
 				email,
 				failedApplication.getCertificationLevel(),
 				failedApplicationId,
-				saved.getId());
+				saved.getId(),
+				retake,
+				ExamAttemptAllowance.attemptNumber(saved),
+				ExamAttemptAllowance.attemptsAllowed(saved));
 
-		return response;
+		return toWorkflowApplicationResponse(saved);
+	}
+
+	/**
+	 * The next sitting on a payment that still covers one. Already paid for, so
+	 * it is created open and paid, and goes straight to scheduling.
+	 */
+	private CertificationApplication buildRetake(User user, Exam exam, CertificationApplication previous) {
+		CertificationApplication paid = ExamAttemptAllowance.paidApplication(previous);
+		int attemptNumber = ExamAttemptAllowance.attemptNumber(previous) + 1;
+		int attemptsAllowed = ExamAttemptAllowance.attemptsAllowed(previous);
+		return CertificationApplication.builder()
+				.user(user)
+				.exam(exam)
+				.certificationLevel(previous.getCertificationLevel())
+				.applicationStatus(CertificationApplicationStatus.IN_PROGRESS)
+				.paymentStatus(PaymentStatus.SUCCESS)
+				.appliedOn(LocalDate.now())
+				.attemptNumber(attemptNumber)
+				.attemptsAllowed(attemptsAllowed)
+				.paidApplication(paid)
+				.remarks("Attempt " + attemptNumber + " of " + attemptsAllowed + " after "
+						+ previous.getApplicationStatus() + " on application #" + previous.getId()
+						+ ", covered by the payment on application #" + paid.getId())
+				.build();
+	}
+
+	/**
+	 * Saves a retake, turning the database's one-application-per-attempt rule
+	 * into a refusal the candidate can read. Two clicks on "start next attempt"
+	 * racing each other both pass every check above; only one row can exist.
+	 */
+	private CertificationApplication saveRetake(CertificationApplication retake) {
+		try {
+			return certificationApplicationRepository.saveAndFlush(retake);
+		} catch (DataIntegrityViolationException ex) {
+			throw new BusinessException(
+					"Your next attempt has already been started. Open it from the Exams page.",
+					HttpStatus.CONFLICT);
+		}
+	}
+
+	/**
+	 * Refuses a retake from anything but the newest attempt on its payment.
+	 *
+	 * <p>The applications list only offers one on the newest row, so this is the
+	 * backstop for a stale tab: an older failed attempt still reads as having
+	 * attempts left, and a retake from it would take an attempt number that is
+	 * already used.</p>
+	 */
+	private void requireLatestAttemptOnPayment(CertificationApplication application) {
+		CertificationApplication paid = ExamAttemptAllowance.paidApplication(application);
+		certificationApplicationRepository.findTopByPaidApplicationOrderByAttemptNumberDesc(paid)
+				.filter(latest -> !latest.getId().equals(application.getId()))
+				.ifPresent(latest -> {
+					throw new BusinessException(
+							"A later attempt on this payment already exists (application #" + latest.getId()
+									+ "). Continue from that one.",
+							HttpStatus.CONFLICT);
+				});
 	}
 
 	@Override
@@ -775,7 +858,11 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 				application.getRemarks(),
 				canReApply,
 				isViolationRestartRequired(application),
-				resolveRestartMessage(application));
+				resolveRestartMessage(application),
+				ExamAttemptAllowance.attemptNumber(application),
+				ExamAttemptAllowance.attemptsAllowed(application),
+				ExamAttemptAllowance.attemptsRemaining(application),
+				ExamAttemptAllowance.retakeAvailable(application));
 	}
 
 	/**
@@ -791,7 +878,14 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	}
 
 	private String resolveRestartMessage(CertificationApplication application) {
-		return isViolationRestartRequired(application) ? VIOLATION_RESTART_MESSAGE : null;
+		if (!isViolationRestartRequired(application)) {
+			return null;
+		}
+		int remaining = ExamAttemptAllowance.attemptsRemaining(application);
+		return remaining > 0
+				? "Exam was terminated for reaching the proctoring violation limit. Your payment covers "
+						+ plural(remaining, "more attempt") + " — start the next one from question 1 without paying again."
+				: VIOLATION_RESTART_MESSAGE;
 	}
 
 	private ExamQuestionPayloadResponse toQuestionPayload(Question question) {
@@ -875,19 +969,36 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	 * total, split across the severities in the proportions it carries. An exam
 	 * that carries no blueprint — one created before it was configurable — draws
 	 * the standard 30-question paper, so no attempt is left without questions.
+	 *
+	 * <p>Questions the candidate has not been given before at this level come
+	 * first, so a retake is a different paper from the one they just sat. See
+	 * {@link #pickSeverity} for what happens when the bank is too small for
+	 * that.</p>
 	 */
-	private List<Question> buildProportionalQuestionSet(Exam exam, CertificationLevel level) {
-		ExamQuestionBlueprint blueprint = ExamQuestionBlueprint.of(exam);
+	private List<Question> buildProportionalQuestionSet(CertificationApplication application) {
+		CertificationLevel level = application.getCertificationLevel();
+		ExamQuestionBlueprint blueprint = ExamQuestionBlueprint.of(application.getExam());
 		Map<QuestionSeverity, Integer> counts = blueprint.questionCounts();
+		Map<Long, Instant> lastSeen = questionsSeenAtLevel(application.getUser(), level);
 
 		List<Question> combined = new ArrayList<>(blueprint.totalQuestions());
 		for (QuestionSeverity severity : QuestionSeverity.values()) {
-			combined.addAll(pickSeverity(level, severity, counts.get(severity)));
+			combined.addAll(pickSeverity(level, severity, counts.get(severity), lastSeen));
 		}
 		return combined;
 	}
 
-	private List<Question> pickSeverity(CertificationLevel level, QuestionSeverity severity, int count) {
+	/**
+	 * Draws {@code count} questions of one severity, unseen ones first.
+	 *
+	 * <p>When the bank holds too few unseen questions the paper is still built,
+	 * topped up from the ones the candidate saw longest ago. Refusing instead
+	 * would lock a candidate out of an attempt they have paid for, over a
+	 * shortfall only an administrator can fix; the admin screen shows how many
+	 * fresh papers the bank supports, and every reuse is logged here.</p>
+	 */
+	private List<Question> pickSeverity(CertificationLevel level, QuestionSeverity severity, int count,
+			Map<Long, Instant> lastSeen) {
 		if (count <= 0) {
 			return new ArrayList<>();
 		}
@@ -899,8 +1010,48 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 							severity, level, count, pool.size()),
 					HttpStatus.BAD_REQUEST);
 		}
+
+		/*
+		 * Shuffled before the sort, and the sort is stable, so questions that tie
+		 * — every unseen one, or every one from the same earlier paper — still
+		 * come out in a random order rather than by id.
+		 */
 		Collections.shuffle(pool);
-		return new ArrayList<>(pool.subList(0, count));
+		pool.sort(Comparator.comparing(
+				(Question question) -> lastSeen.get(question.getId()),
+				Comparator.nullsFirst(Comparator.<Instant>naturalOrder())));
+		List<Question> picked = new ArrayList<>(pool.subList(0, count));
+
+		long reused = picked.stream().filter(question -> lastSeen.containsKey(question.getId())).count();
+		if (reused > 0) {
+			log.warn("Question bank too small for a fresh paper: level={} severity={} reused={} of {}",
+					level, severity, reused, count);
+		}
+		return picked;
+	}
+
+	/**
+	 * When the candidate was last given each question at this level, as the start
+	 * of the attempt it appeared in. A paper that cannot be read is skipped: that
+	 * risks a repeated question, where failing would cost the candidate the start.
+	 */
+	private Map<Long, Instant> questionsSeenAtLevel(User user, CertificationLevel level) {
+		Map<Long, Instant> lastSeen = new HashMap<>();
+		for (Object[] paper : examSessionRepository.findPapersSeenAtLevel(user, level)) {
+			// A session with no start time still asked its questions; it counts as the oldest.
+			Instant shownAt = paper[1] instanceof Instant startedAt ? startedAt : Instant.EPOCH;
+			List<Long> questionIds;
+			try {
+				questionIds = objectMapper.readValue((String) paper[0], LONG_LIST_TYPE);
+			} catch (JsonProcessingException ex) {
+				log.warn("Skipping an unreadable earlier paper while drawing questions: {}", ex.getOriginalMessage());
+				continue;
+			}
+			for (Long questionId : questionIds) {
+				lastSeen.merge(questionId, shownAt, (earlier, later) -> earlier.isAfter(later) ? earlier : later);
+			}
+		}
+		return lastSeen;
 	}
 
 	private User findUser(String email) {
@@ -947,11 +1098,19 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	 * pick — and both used to be discovered one step after the money.</p>
 	 */
 	private String evaluateBookingWindowIssue(Exam exam) {
+		return evaluateBookingWindowIssue(exam, "Contact support before paying — nothing has been charged.");
+	}
+
+	/**
+	 * @param closedAdvice what to do about a window that has closed, which depends
+	 *                     on whether the candidate is about to pay or holds a
+	 *                     retake they have already paid for
+	 */
+	private String evaluateBookingWindowIssue(Exam exam, String closedAdvice) {
 		Instant now = Instant.now();
 		if (exam.getScheduledEndTime() != null && now.isAfter(exam.getScheduledEndTime())) {
 			return "This exam stopped taking bookings on " + formatWindowBound(exam.getScheduledEndTime())
-					+ ", so a slot cannot be scheduled for it. Contact support before paying —"
-					+ " nothing has been charged.";
+					+ ", so a slot cannot be scheduled for it. " + closedAdvice;
 		}
 		if (exam.getScheduledStartTime() != null && now.isBefore(exam.getScheduledStartTime())) {
 			return "This exam opens for booking on " + formatWindowBound(exam.getScheduledStartTime())
@@ -971,9 +1130,40 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 
 		return switch (existingSession.getSessionStatus()) {
 			case IN_PROGRESS -> "An attempt is already in progress for this application. Resume it instead of rescheduling.";
-			case INVALIDATED -> "This attempt was terminated by proctoring. Re-apply and complete payment to restart from question 1.";
-			default -> "This application has already been used for an exam attempt. Re-apply and complete payment to sit it again.";
+			default -> spentAttemptMessage(application, existingSession.getSessionStatus());
 		};
+	}
+
+	/**
+	 * Why an application whose attempt has ended cannot be started or booked
+	 * again, and what to do instead. Scheduling and starting share it so they
+	 * cannot give different advice about the same attempt.
+	 */
+	private static String spentAttemptMessage(CertificationApplication application, ExamStatus sessionStatus) {
+		if (sessionStatus == ExamStatus.INVALIDATED) {
+			return "This attempt was terminated by proctoring. "
+					+ nextStepAfterSpentAttempt(application, "Re-apply and complete payment to restart from question 1.");
+		}
+		// A pass is not something to retake, whatever the payment still covers.
+		if (sessionStatus == ExamStatus.PASSED) {
+			return "This application has already been used for an exam attempt. Re-apply and complete payment to sit it again.";
+		}
+		return "This application has already been used for an exam attempt. "
+				+ nextStepAfterSpentAttempt(application, "Re-apply and complete payment to sit it again.");
+	}
+
+	/**
+	 * The sentence that closes a refusal of a spent attempt: start the retake
+	 * the payment still covers, or — once it covers no more — {@code payAgain}.
+	 * Telling a candidate with attempts left to pay a second time is the most
+	 * expensive wrong sentence this class could say.
+	 */
+	private static String nextStepAfterSpentAttempt(CertificationApplication application, String payAgain) {
+		int remaining = ExamAttemptAllowance.attemptsRemaining(application);
+		return remaining > 0
+				? "Start your next attempt from the Exams page — your payment covers "
+						+ plural(remaining, "more attempt") + ", so there is nothing to pay."
+				: payAgain;
 	}
 
 	private String evaluateStartReadinessIssue(CertificationApplication application) {
@@ -982,10 +1172,12 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 		// are not the same news, and the merged wording made a terminated
 		// candidate wonder which one they were being told.
 		if (application.getApplicationStatus() == CertificationApplicationStatus.TERMINATED) {
-			return "This attempt was terminated by proctoring. Re-apply and complete payment to restart from question 1.";
+			return "This attempt was terminated by proctoring. "
+					+ nextStepAfterSpentAttempt(application, "Re-apply and complete payment to restart from question 1.");
 		}
 		if (application.getApplicationStatus() == CertificationApplicationStatus.FAILED) {
-			return "This application is closed after a completed attempt. Re-apply and complete payment before starting again.";
+			return "This application is closed after a completed attempt. "
+					+ nextStepAfterSpentAttempt(application, "Re-apply and complete payment before starting again.");
 		}
 		if (application.getPaymentStatus() != PaymentStatus.SUCCESS) {
 			return "Payment must be completed before starting the examination";

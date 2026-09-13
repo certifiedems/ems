@@ -21,6 +21,7 @@ import com.ems.dto.request.PaymentCompletionRequest;
 import com.ems.dto.request.PaymentInitiationRequest;
 import com.ems.dto.request.WorkflowExamScheduleRequest;
 import com.ems.dto.response.ApiResponse;
+import com.ems.dto.response.ExamAttemptAllowanceResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamSessionQuestionResponse;
 import com.ems.dto.response.ExamStartResponse;
@@ -55,6 +56,20 @@ public class ExamWorkflowController {
         String email = requireUser(authentication);
         return ok("Exam workflow options fetched successfully",
                 examWorkflowService.getWorkflowOptions(email, level));
+    }
+
+    /**
+     * How many sittings a payment made now buys at a level. Shown on the payment
+     * screen, so a candidate knows before paying what a failed attempt costs them.
+     */
+    @GetMapping("/attempt-allowance/{level}")
+    @Operation(summary = "Get how many exam attempts one payment covers at a certification level")
+    public ResponseEntity<ApiResponse<ExamAttemptAllowanceResponse>> getAttemptAllowance(
+            Authentication authentication,
+            @PathVariable CertificationLevel level) {
+        requireUser(authentication);
+        return ok("Exam attempt allowance fetched successfully",
+                examWorkflowService.getAttemptAllowance(level));
     }
 
     @PostMapping("/applications")

@@ -23,6 +23,10 @@ public interface QuestionRepository extends JpaRepository<Question, Long> {
             CertificationLevel certificationLevel,
             java.util.Collection<QuestionSeverity> severities);
 
+    long countByCertificationLevelAndSeverityAndActiveTrue(
+            CertificationLevel certificationLevel,
+            QuestionSeverity severity);
+
     @Query("""
             select q from Question q
             where (:questionCode is null or lower(q.questionCode) like :questionCode)

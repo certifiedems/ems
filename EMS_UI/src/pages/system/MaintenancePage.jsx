@@ -4,6 +4,7 @@ import PropTypes from 'prop-types'
 import { Box, Button, Typography, CircularProgress } from '@mui/material'
 import PcbBackdrop from '../../components/brand/PcbBackdrop'
 import BrandMark from '../../components/brand/BrandMark'
+import SupportEmailLink from '../../components/common/SupportEmailLink'
 import { SERVER_STATUS } from '../../hooks/useServerStatus'
 import { tokens, fonts, gradients, shadows, tone, microLabel } from '../../styles/tokens'
 
@@ -236,6 +237,10 @@ const MaintenancePage = ({ status, detail, isChecking, nextProbeAt, onRetry }) =
         <Box sx={{ mt: 2.5, minHeight: 16 }}>
           <RetryCountdown nextProbeAt={nextProbeAt} />
         </Box>
+
+        <Typography sx={{ mt: 3, fontSize: 13, color: tokens.body }}>
+          Still stuck? Email us at <SupportEmailLink />
+        </Typography>
 
         <Box
           sx={{

@@ -9,6 +9,7 @@ import com.ems.dto.request.ExamWorkflowApplicationRequest;
 import com.ems.dto.request.PaymentCompletionRequest;
 import com.ems.dto.request.PaymentInitiationRequest;
 import com.ems.dto.request.WorkflowExamScheduleRequest;
+import com.ems.dto.response.ExamAttemptAllowanceResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamSessionQuestionResponse;
 import com.ems.dto.response.ExamStartResponse;
@@ -20,6 +21,9 @@ import com.ems.enums.CertificationLevel;
 public interface ExamWorkflowService {
 
     WorkflowExamOptionResponse getWorkflowOptions(String email, CertificationLevel certificationLevel);
+
+    /** How many sittings a payment made now buys at this level, for the candidate about to pay. */
+    ExamAttemptAllowanceResponse getAttemptAllowance(CertificationLevel certificationLevel);
 
     ExamWorkflowApplicationResponse createApplication(String email,
             ExamWorkflowApplicationRequest request);

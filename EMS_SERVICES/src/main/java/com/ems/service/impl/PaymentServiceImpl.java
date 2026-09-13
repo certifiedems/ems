@@ -38,6 +38,7 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.PaymentRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.AuditService;
+import com.ems.service.ExamAttemptPolicyService;
 import com.ems.service.PaymentReceiptContent;
 import com.ems.service.PaymentReceiptPdfGeneratorService;
 import com.ems.service.PaymentReceiptPdfGeneratorService.PaymentReceiptData;
@@ -64,6 +65,7 @@ public class PaymentServiceImpl implements PaymentService {
 	private final PaymentReceiptPdfGeneratorService receiptPdfGeneratorService;
 	private final Map<PaymentProvider, PaymentProviderStrategy> providerStrategies;
 	private final AuditService auditService;
+	private final ExamAttemptPolicyService examAttemptPolicyService;
 
 	public PaymentServiceImpl(
 			PaymentRepository paymentRepository,
@@ -71,7 +73,8 @@ public class PaymentServiceImpl implements PaymentService {
 			UserRepository userRepository,
 			PaymentReceiptPdfGeneratorService receiptPdfGeneratorService,
 			List<PaymentProviderStrategy> providerStrategies,
-			AuditService auditService) {
+			AuditService auditService,
+			ExamAttemptPolicyService examAttemptPolicyService) {
 		this.paymentRepository = paymentRepository;
 		this.certificationApplicationRepository = certificationApplicationRepository;
 		this.userRepository = userRepository;
@@ -79,6 +82,7 @@ public class PaymentServiceImpl implements PaymentService {
 		this.providerStrategies = providerStrategies.stream()
 				.collect(Collectors.toMap(PaymentProviderStrategy::provider, Function.identity()));
 		this.auditService = auditService;
+		this.examAttemptPolicyService = examAttemptPolicyService;
 	}
 
 	@Override
@@ -169,6 +173,7 @@ public class PaymentServiceImpl implements PaymentService {
 			application.setPaymentStatus(savedPayment.getPaymentStatus());
 			if (savedPayment.getPaymentStatus() == PaymentStatus.SUCCESS) {
 				application.setApplicationStatus(CertificationApplicationStatus.IN_PROGRESS);
+				fixAttemptAllowance(application);
 			}
 			certificationApplicationRepository.save(application);
 		}
@@ -209,6 +214,13 @@ public class PaymentServiceImpl implements PaymentService {
 		if (application != null) {
 			application.setPaymentStatus(PaymentStatus.REFUNDED);
 			certificationApplicationRepository.save(application);
+			// The retakes this payment covered go with it: an attempt nobody has
+			// paid for any more must not be startable, nor offer another one.
+			for (CertificationApplication retake
+					: certificationApplicationRepository.findByPaidApplicationOrderByAttemptNumberAsc(application)) {
+				retake.setPaymentStatus(PaymentStatus.REFUNDED);
+				certificationApplicationRepository.save(retake);
+			}
 		}
 
 		User user = payment.getUser();
@@ -353,6 +365,7 @@ public class PaymentServiceImpl implements PaymentService {
 			application.setPaymentStatus(status);
 			if (status == PaymentStatus.SUCCESS) {
 				application.setApplicationStatus(CertificationApplicationStatus.IN_PROGRESS);
+				fixAttemptAllowance(application);
 			}
 			certificationApplicationRepository.save(application);
 		}
@@ -367,6 +380,19 @@ public class PaymentServiceImpl implements PaymentService {
 				.targetId(savedPayment.getTransactionId())
 				.description("Payment settled via " + source + " as " + status)
 				.build());
+	}
+
+	/**
+	 * Fixes how many sittings this payment buys, from the level's policy at the
+	 * moment the money moved. Set once and never re-read: the browser callback and
+	 * the webhook can both reach a payment, and an administrator's change landing
+	 * between the two must not alter what was paid for.
+	 */
+	private void fixAttemptAllowance(CertificationApplication application) {
+		if (application.getAttemptsAllowed() == null) {
+			application.setAttemptsAllowed(
+					examAttemptPolicyService.attemptsPerPayment(application.getCertificationLevel()));
+		}
 	}
 
 	@Override

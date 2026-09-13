@@ -110,4 +110,16 @@ public class ExamSession extends BaseAuditEntity {
     /** When the draft above was last written; null until the first autosave. */
     @Column(name = "progress_saved_at")
     private Instant progressSavedAt;
+
+    /**
+     * The proctoring rules this attempt is judged by, captured when it started.
+     *
+     * <p>Fixed per attempt so an administrator's change reaches attempts that
+     * start afterwards and never one already under way: a candidate shown one
+     * strike limit at the start is not terminated under another. Null on attempts
+     * begun before rules were captured, which follow the exam's current rules.
+     * See {@link com.ems.service.ProctoringPolicyService#resolveForSession}.</p>
+     */
+    @Column(name = "proctoring_policy_json")
+    private String proctoringPolicyJson;
 }

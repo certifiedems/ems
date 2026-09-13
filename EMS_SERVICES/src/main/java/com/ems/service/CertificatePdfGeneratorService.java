@@ -15,7 +15,7 @@ public interface CertificatePdfGeneratorService {
      * download whose stored file carries anything else is re-rendered before it
      * is served. Bump it whenever the drawn output changes.
      */
-    String DESIGN_VERSION = "3";
+    String DESIGN_VERSION = "4";
 
     /** Document-information key holding {@link #DESIGN_VERSION}. */
     String DESIGN_VERSION_KEY = "EmsCertificateDesign";

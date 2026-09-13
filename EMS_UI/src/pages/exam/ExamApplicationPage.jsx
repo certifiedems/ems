@@ -10,12 +10,14 @@ import {
 import { userAPI } from '../../api/userAPI'
 import { examAPI } from '../../api/examAPI'
 import StatusChip from '../../components/common/StatusChip'
+import SupportEmailLink from '../../components/common/SupportEmailLink'
 import { tokens, fonts, gradients, shadows, ctaButton } from '../../styles/tokens'
 import EmptyState from '../../components/common/EmptyState'
 import SyllabusPanel from '../../components/syllabus/SyllabusPanel'
 import PageHeader from '../../components/common/PageHeader'
 import SyllabusDialog from '../../components/syllabus/SyllabusDialog'
 import { getSyllabus } from '../../data/syllabus'
+import { SUPPORT_EMAIL } from '../../config/support'
 import { bookingWindowClosed, examWindowState, formatExamSlot, isClosedStatus, nextStep } from '../../utils/examJourney'
 import AddIcon from '@mui/icons-material/AddRounded'
 import AssignmentIcon from '@mui/icons-material/AssignmentRounded'
@@ -132,11 +134,19 @@ const ExamApplicationPage = () => {
     setReApplyError('')
     try {
       const res = await examAPI.reApply(applicationId)
-      const newApplicationId = res.data.data?.applicationId
+      const created = res.data.data
+      const newApplicationId = created?.applicationId
       if (!newApplicationId) {
         throw new Error('Re-application created, but no new application id was returned.')
       }
-      navigate(`/exam/payment/${newApplicationId}`, { replace: true })
+      // A retake the payment still covers is already paid for, so it skips the
+      // payment screen and goes straight to booking a slot.
+      navigate(
+        created.paymentStatus === 'SUCCESS'
+          ? `/exam/schedule/${newApplicationId}`
+          : `/exam/payment/${newApplicationId}`,
+        { replace: true }
+      )
     } catch (err) {
       setReApplyError(err.response?.data?.message || 'Failed to re-apply. Please try again.')
     } finally {
@@ -221,7 +231,7 @@ const ExamApplicationPage = () => {
     const opensAt = exam.scheduledStartTime ? new Date(exam.scheduledStartTime).getTime() : null
     const closesAt = exam.scheduledEndTime ? new Date(exam.scheduledEndTime).getTime() : null
     if (closesAt !== null && now > closesAt) {
-      return `Stopped taking bookings on ${formatExamSlot(exam.scheduledEndTime)} — contact support.`
+      return `Stopped taking bookings on ${formatExamSlot(exam.scheduledEndTime)} — contact support at ${SUPPORT_EMAIL}.`
     }
     if (opensAt !== null && now < opensAt) {
       return `Opens for booking on ${formatExamSlot(exam.scheduledStartTime)}.`
@@ -528,6 +538,14 @@ const ExamApplicationPage = () => {
                             >
                               {app.appliedOn ? new Date(app.appliedOn).toLocaleDateString() : '-'}
                             </Typography>
+                            {app.attemptsAllowed > 1 && (
+                              <Typography
+                                component="span"
+                                sx={{ ml: 1, fontFamily: fonts.mono, fontSize: 10.5, color: tokens.copperLt, whiteSpace: 'nowrap' }}
+                              >
+                                Attempt {app.attemptNumber} of {app.attemptsAllowed}
+                              </Typography>
+                            )}
                           </Box>
 
                           <StatusChip status={app.applicationStatus} />
@@ -577,7 +595,10 @@ const ExamApplicationPage = () => {
                                 onClick={() => handleReApply(app.applicationId)}
                                 sx={{ ...ctaButton, width: 'auto', height: 34, px: 1.75, fontSize: 11, letterSpacing: '.2px', textTransform: 'none', borderRadius: '9px' }}
                               >
-                                {reApplying === app.applicationId ? 'Re-applying…' : 'Re-apply & Pay Again'}
+                                {reApplying === app.applicationId && (app.retakeAvailable ? 'Starting…' : 'Re-applying…')}
+                                {reApplying !== app.applicationId && (app.retakeAvailable
+                                  ? `Start Attempt ${app.attemptNumber + 1} of ${app.attemptsAllowed}`
+                                  : 'Re-apply & Pay Again')}
                               </Button>
                             )}
                           </Box>
@@ -587,7 +608,9 @@ const ExamApplicationPage = () => {
                           <Box sx={{ pl: '21px' }}>
                             <Typography sx={{ fontSize: 12.5, lineHeight: 1.5, color: '#E0A0A0' }}>
                               This exam stopped taking bookings on {formatExamSlot(app.bookingClosesAt)}.
-                              Contact support to have the window reopened — your payment stays on this application.
+                              Contact support at{' '}
+                              <SupportEmailLink subject={`Reopen booking window: application #${app.applicationId}`} /> to
+                              have the window reopened — your payment stays on this application.
                             </Typography>
                           </Box>
                         )}

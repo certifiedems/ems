@@ -40,6 +40,14 @@ public interface CertificationApplicationRepository extends JpaRepository<Certif
             Exam exam,
             Collection<CertificationApplicationStatus> applicationStatuses);
 
+    /** The newest retake a payment has covered; empty while only the paid attempt exists. */
+    Optional<CertificationApplication> findTopByPaidApplicationOrderByAttemptNumberDesc(
+            CertificationApplication paidApplication);
+
+    /** Every retake a payment has covered, oldest first. */
+    List<CertificationApplication> findByPaidApplicationOrderByAttemptNumberAsc(
+            CertificationApplication paidApplication);
+
     Optional<CertificationApplication> findTopByUserAndCertificationLevelOrderByAppliedOnDescIdDesc(
             User user,
             CertificationLevel certificationLevel);

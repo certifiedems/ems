@@ -51,5 +51,21 @@ public record ExamWorkflowApplicationResponse(
         String remarks,
         boolean canReApply,
         boolean restartRequired,
-        String restartMessage) {
+        String restartMessage,
+
+        /** Which sitting on its payment this application is; 1 for the paid attempt. */
+        int attemptNumber,
+
+        /** Sittings the payment covers; 1 until the application is paid. */
+        int attemptsAllowed,
+
+        /** Sittings the payment still covers after this one. */
+        int attemptsRemaining,
+
+        /**
+         * Whether the next attempt is already paid for: this one ended without a
+         * pass and the payment covers another. When true, re-applying starts that
+         * attempt free of charge, and it goes straight to scheduling.
+         */
+        boolean retakeAvailable) {
 }

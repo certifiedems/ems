@@ -1,11 +1,14 @@
 package com.ems.service.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -27,14 +30,18 @@ import com.ems.enums.CertificationLevel;
 import com.ems.enums.ExamStatus;
 import com.ems.enums.PaymentStatus;
 import com.ems.enums.ProctoringAction;
+import com.ems.enums.ViolationEnforcement;
 import com.ems.enums.ViolationType;
+import com.ems.exception.BusinessException;
 import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.VideoRecordingRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
 import com.ems.service.AuditService;
+import com.ems.service.EffectiveProctoringPolicy;
 import com.ems.service.ProctorEvidenceStorageService;
+import com.ems.service.ProctoringPolicyService;
 
 @ExtendWith(MockitoExtension.class)
 class ProctoringServiceImplTest {
@@ -66,6 +73,9 @@ class ProctoringServiceImplTest {
 	@Mock
 	private AuditService auditService;
 
+	@Mock
+	private ProctoringPolicyService proctoringPolicyService;
+
 	private ProctoringServiceImpl proctoringService;
 
 	@BeforeEach
@@ -79,7 +89,11 @@ class ProctoringServiceImplTest {
 				proctorEvidenceRepository,
 				proctorEvidenceStorageService,
 				examInvalidationHandler,
-				auditService);
+				auditService,
+				proctoringPolicyService);
+
+		// No policy saved unless a test says otherwise: the built-in rules.
+		lenient().when(proctoringPolicyService.resolveForSession(any())).thenReturn(EffectiveProctoringPolicy.builtIn());
 	}
 
 	@Test
@@ -155,6 +169,67 @@ class ProctoringServiceImplTest {
 		assertThat(session.getSessionStatus()).isEqualTo(ExamStatus.IN_PROGRESS);
 		assertThat(session.getViolationCount()).isEqualTo(1);
 
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	@Test
+	void reportViolation_rejectsATypeTheExamDoesNotMonitor() {
+		User user = User.builder().id(102L).userId("U-102").email("off@example.com").build();
+		Exam exam = Exam.builder().id(202L).examCode("EX-L3").certificationLevel(CertificationLevel.L3).build();
+		ExamSession session = ExamSession.builder()
+				.id(302L)
+				.sessionToken(UUID.randomUUID())
+				.user(user)
+				.exam(exam)
+				.sessionStatus(ExamStatus.IN_PROGRESS)
+				.violationCount(0)
+				.build();
+
+		when(examSessionRepository.findByIdAndUserEmailIgnoreCase(302L, "off@example.com"))
+				.thenReturn(Optional.of(session));
+		when(proctoringPolicyService.resolveForSession(session)).thenReturn(new EffectiveProctoringPolicy(
+				3, 2, 0, 0, 15, Map.of(ViolationType.TAB_SWITCH, ViolationEnforcement.DISABLED)));
+
+		assertThatThrownBy(() -> proctoringService.reportViolation(
+				"off@example.com",
+				302L,
+				new ViolationReportRequest(ViolationType.TAB_SWITCH, "Tab switch detected")))
+				.isInstanceOf(BusinessException.class)
+				.hasMessageContaining("not monitored");
+
+		assertThat(session.getViolationCount()).isZero();
+		verify(violationRepository, never()).save(any(Violation.class));
+	}
+
+	@Test
+	void reportViolation_thirdStrikeUnderAHigherLimitIsOnlyAWarning() {
+		User user = User.builder().id(103L).userId("U-103").email("limit@example.com").build();
+		Exam exam = Exam.builder().id(203L).examCode("EX-L1B").certificationLevel(CertificationLevel.L1).build();
+		ExamSession session = ExamSession.builder()
+				.id(303L)
+				.sessionToken(UUID.randomUUID())
+				.user(user)
+				.exam(exam)
+				.sessionStatus(ExamStatus.IN_PROGRESS)
+				.violationCount(2)
+				.build();
+
+		when(examSessionRepository.findByIdAndUserEmailIgnoreCase(303L, "limit@example.com"))
+				.thenReturn(Optional.of(session));
+		when(proctoringPolicyService.resolveForSession(session)).thenReturn(new EffectiveProctoringPolicy(
+				4, 2, 0, 0, 15, Map.of()));
+		when(violationRepository.save(any(Violation.class))).thenAnswer(invocation -> invocation.getArgument(0));
+		when(examSessionRepository.save(any(ExamSession.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+		ViolationResponse response = proctoringService.reportViolation(
+				"limit@example.com",
+				303L,
+				new ViolationReportRequest(ViolationType.TAB_SWITCH, "Tab switch detected"));
+
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.WARNING);
+		assertThat(response.examTerminated()).isFalse();
+		assertThat(session.getViolationCount()).isEqualTo(3);
+		assertThat(session.getSessionStatus()).isEqualTo(ExamStatus.IN_PROGRESS);
 		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
 	}
 }

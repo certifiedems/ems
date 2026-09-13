@@ -23,9 +23,18 @@ export const proctoringAPI = {
     apiClient.post('/proctor/log-violation', payload, { timeout: 20000 }),
 
   /**
-   * Lightweight session-continuity probe. Uses an existing cheap authenticated
-   * read rather than a bespoke endpoint, so it doubles as a token-validity check.
+   * The exam page checking in. Returns the same state as the violation summary,
+   * and lets the server notice the attempt open in two places at once:
+   * `clientId` identifies this copy of the exam page, one per browser tab.
    */
-  heartbeat: (sessionId) =>
-    apiClient.get(`/proctoring/sessions/${sessionId}/violations/summary`, { timeout: 8000 })
+  heartbeat: (sessionId, clientId) =>
+    apiClient.post(`/proctoring/sessions/${sessionId}/heartbeat`, { clientId }, { timeout: 8000 }),
+
+  /**
+   * The proctoring rules for an application's exam: which detections to raise,
+   * the sound thresholds and the strike limit. For an attempt already in
+   * progress, the rules it started under.
+   */
+  getPolicyForApplication: (applicationId) =>
+    apiClient.get(`/proctoring/policy/applications/${applicationId}`)
 }

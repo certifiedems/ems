@@ -28,6 +28,7 @@ import com.ems.entity.VideoRecording;
 import com.ems.entity.Violation;
 import com.ems.enums.ExamStatus;
 import com.ems.enums.ProctoringAction;
+import com.ems.enums.ViolationEnforcement;
 import com.ems.enums.ViolationType;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
@@ -36,8 +37,10 @@ import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.VideoRecordingRepository;
 import com.ems.repository.ViolationRepository;
 import com.ems.service.AuditService;
+import com.ems.service.EffectiveProctoringPolicy;
 import com.ems.service.ProctorEvidenceContent;
 import com.ems.service.ProctorEvidenceStorageService;
+import com.ems.service.ProctoringPolicyService;
 import com.ems.service.ProctoringService;
 
 import lombok.RequiredArgsConstructor;
@@ -82,6 +85,7 @@ public class ProctoringServiceImpl implements ProctoringService {
 	private final ProctorEvidenceStorageService proctorEvidenceStorageService;
 	private final ExamInvalidationHandler examInvalidationHandler;
 	private final AuditService auditService;
+	private final ProctoringPolicyService proctoringPolicyService;
 
 	@Override
 	public VideoRecordingResponse recordVideoMetadata(String email, Long sessionId, RecordingMetadataRequest request) {
@@ -108,15 +112,31 @@ public class ProctoringServiceImpl implements ProctoringService {
 		validateSessionStillActive(session);
 		validateViolationType(request.violationType());
 
-		int nextViolationLevel = session.getViolationCount() + 1;
-		ProctoringAction actionTaken = nextViolationLevel >= 3
-				? ProctoringAction.EXAM_TERMINATED
-				: ProctoringAction.WARNING;
+		EffectiveProctoringPolicy policy = proctoringPolicyService.resolveForSession(session);
+		ViolationEnforcement enforcement = policy.enforcementFor(request.violationType());
+		if (enforcement == ViolationEnforcement.DISABLED) {
+			throw new BusinessException("This violation type is not monitored for this exam", HttpStatus.BAD_REQUEST);
+		}
+
+		// The same rules the AI pipeline's recorder applies: a record-only type is
+		// logged at the current count and leaves the counter alone.
+		boolean countsAsStrike = enforcement == ViolationEnforcement.STRIKE;
+		int violationLevel = countsAsStrike ? session.getViolationCount() + 1 : session.getViolationCount();
+		boolean terminated = countsAsStrike && violationLevel >= policy.strikeLimit();
+
+		ProctoringAction actionTaken;
+		if (!countsAsStrike) {
+			actionTaken = ProctoringAction.FLAGGED_FOR_REVIEW;
+		} else if (terminated) {
+			actionTaken = ProctoringAction.EXAM_TERMINATED;
+		} else {
+			actionTaken = ProctoringAction.WARNING;
+		}
 
 		Violation violation = Violation.builder()
 				.examSession(session)
 				.violationType(request.violationType())
-				.violationLevel(nextViolationLevel)
+				.violationLevel(violationLevel)
 				.description(request.description())
 				.detectedAt(Instant.now())
 				.actionTaken(actionTaken)
@@ -124,14 +144,16 @@ public class ProctoringServiceImpl implements ProctoringService {
 
 		Violation savedViolation = violationRepository.save(violation);
 
-		session.setViolationCount(nextViolationLevel);
-		if (actionTaken == ProctoringAction.EXAM_TERMINATED) {
-			session.setSessionStatus(ExamStatus.INVALIDATED);
-			session.setSessionEndTime(Instant.now());
+		if (countsAsStrike) {
+			session.setViolationCount(violationLevel);
+			if (terminated) {
+				session.setSessionStatus(ExamStatus.INVALIDATED);
+				session.setSessionEndTime(Instant.now());
+			}
+			examSessionRepository.save(session);
 		}
-		examSessionRepository.save(session);
 
-		if (actionTaken == ProctoringAction.EXAM_TERMINATED) {
+		if (terminated) {
 			markLatestApplicationAsFailedForRestart(session);
 			auditService.record(AuditEvent.builder()
 					.eventType(AuditEventType.EXAM_INVALIDATED)
@@ -141,13 +163,13 @@ public class ProctoringServiceImpl implements ProctoringService {
 					.targetUserId(session.getUser().getUserId())
 					.targetType("EXAM_SESSION")
 					.targetId(String.valueOf(sessionId))
-					.description("Exam terminated after 3rd proctoring violation ("
-							+ request.violationType() + ")")
+					.description("Exam terminated on reaching the proctoring strike limit of "
+							+ policy.strikeLimit() + " (" + request.violationType() + ")")
 					.build());
 		}
 
 		log.info("Proctoring violation recorded: sessionId={}, violationType={}, level={}, action={}",
-				sessionId, request.violationType(), nextViolationLevel, actionTaken);
+				sessionId, request.violationType(), violationLevel, actionTaken);
 		return toViolationResponse(savedViolation);
 	}
 
@@ -303,7 +325,7 @@ public class ProctoringServiceImpl implements ProctoringService {
 
 	private ViolationResponse toViolationResponse(Violation violation) {
 		String message = violation.getActionTaken() == ProctoringAction.EXAM_TERMINATED
-				? "3rd violation detected. Exam terminated automatically."
+				? "Strike limit reached. Exam terminated automatically."
 				: "Violation recorded. Warning issued to candidate.";
 
 		return new ViolationResponse(
@@ -341,7 +363,7 @@ public class ProctoringServiceImpl implements ProctoringService {
 				 * which is the exact mistake that used to end exams early.
 				 */
 				session.getViolationCount(),
-				ViolationStrikeRecorder.STRIKE_LIMIT,
+				proctoringPolicyService.resolveForSession(session).strikeLimit(),
 				terminated,
 				session.getSessionStatus(),
 				lastType,

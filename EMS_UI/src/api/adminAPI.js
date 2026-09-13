@@ -54,6 +54,31 @@ export const adminAPI = {
 	// resets, admin actions on users/payments/certificates, exam lifecycle.
 	getAuditLogs: (params) => apiClient.get('/admin/audit-logs', { params }),
 
+	// ----- Proctoring rules (/api/admin/proctoring-policies) -----
+	// The default rules apply to every exam without rules of its own. A save
+	// sends back the `version` it loaded; a 409 means another admin saved first.
+	getDefaultProctoringPolicy: () => apiClient.get('/admin/proctoring-policies/default'),
+
+	updateDefaultProctoringPolicy: (data) => apiClient.put('/admin/proctoring-policies/default', data),
+
+	// Every exam, flagged with whether it has rules of its own.
+	getExamProctoringPolicies: () => apiClient.get('/admin/proctoring-policies/exams'),
+
+	getExamProctoringPolicy: (examId) => apiClient.get(`/admin/proctoring-policies/exams/${examId}`),
+
+	updateExamProctoringPolicy: (examId, data) =>
+		apiClient.put(`/admin/proctoring-policies/exams/${examId}`, data),
+
+	// Deletes the exam's own rules, so it follows the default again.
+	resetExamProctoringPolicy: (examId) => apiClient.delete(`/admin/proctoring-policies/exams/${examId}`),
+
+	// ----- Exam attempts (/api/admin/attempt-policies) -----
+	// How many attempts one payment covers, per certification level. A save
+	// sends back the `version` it loaded; a 409 means another admin saved first.
+	getAttemptPolicies: () => apiClient.get('/admin/attempt-policies'),
+
+	updateAttemptPolicy: (level, data) => apiClient.put(`/admin/attempt-policies/${level}`, data),
+
 	// ----- Exam management (/api/exams) -----
 	getAllExams: (params) => apiClient.get('/exams', { params }),
 

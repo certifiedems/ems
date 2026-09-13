@@ -45,5 +45,13 @@ public record ExamStartResponse(
          * the answers did not, because they existed only in the browser that was
          * cut off. This is the same attempt handed back intact.</p>
          */
-        ExamProgressResponse savedProgress) {
+        ExamProgressResponse savedProgress,
+
+        /**
+         * Which sitting on its payment this attempt is, and how many the payment
+         * covers, so the exam screen can tell a terminated candidate whether
+         * their next attempt is already paid for.
+         */
+        int attemptNumber,
+        int attemptsAllowed) {
 }

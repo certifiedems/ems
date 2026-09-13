@@ -36,6 +36,7 @@ import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.CertificationJourneyService;
 import com.ems.service.DashboardService;
+import com.ems.util.ExamAttemptAllowance;
 import com.ems.util.ExamStartWindow;
 
 import lombok.RequiredArgsConstructor;
@@ -45,8 +46,6 @@ import lombok.RequiredArgsConstructor;
 @ConditionalOnProperty(name = "app.data.mode", havingValue = "sql", matchIfMissing = true)
 @Transactional(readOnly = true)
 public class DashboardServiceImpl implements DashboardService {
-
-	private static final String RESTART_NOTE = "Exam invalidated after 3 proctoring violations. Re-apply and complete payment to restart from question 1.";
 
 	/** Statuses that mean "this level is already being worked on, don't offer to apply again". */
 	private static final Set<CertificationApplicationStatus> OPEN_APPLICATION_STATUSES = EnumSet.of(
@@ -98,7 +97,11 @@ public class DashboardServiceImpl implements DashboardService {
 			ExamStartWindow.closesAt(application.getScheduledExamTime()),
 			application.getExam() == null ? null : application.getExam().getScheduledStartTime(),
 			application.getExam() == null ? null : application.getExam().getScheduledEndTime(),
-			hasAttemptInProgress(application)))
+			hasAttemptInProgress(application),
+			ExamAttemptAllowance.attemptNumber(application),
+			ExamAttemptAllowance.attemptsAllowed(application),
+			ExamAttemptAllowance.attemptsRemaining(application),
+			ExamAttemptAllowance.retakeAvailable(application)))
 		.toList();
 
 	// Terminated attempts count here too: the tile answers "how many attempts
@@ -312,12 +315,7 @@ public class DashboardServiceImpl implements DashboardService {
 	    // Same event as the invalidation handler's, reached late, so it must
 	    // reach the same outcome: the attempt was ended, never scored.
 	    application.setApplicationStatus(CertificationApplicationStatus.TERMINATED);
-	    String remarks = application.getRemarks();
-	    if (remarks == null || remarks.isBlank()) {
-		application.setRemarks(RESTART_NOTE);
-	    } else if (!remarks.contains(RESTART_NOTE)) {
-		application.setRemarks(remarks + " | " + RESTART_NOTE);
-	    }
+	    application.setRemarks(ExamInvalidationHandler.appendInvalidationNote(application));
 	    certificationApplicationRepository.save(application);
 	}
     }

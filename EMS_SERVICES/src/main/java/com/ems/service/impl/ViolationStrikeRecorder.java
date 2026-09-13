@@ -20,13 +20,16 @@ import com.ems.entity.Violation;
 import com.ems.enums.EvidenceStorageKind;
 import com.ems.enums.ExamStatus;
 import com.ems.enums.ProctoringAction;
+import com.ems.enums.ViolationEnforcement;
 import com.ems.enums.ViolationType;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.EffectiveProctoringPolicy;
 import com.ems.service.ProctorEvidenceStorageService;
+import com.ems.service.ProctoringPolicyService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,26 +49,6 @@ import lombok.extern.slf4j.Slf4j;
 @ConditionalOnProperty(name = "app.data.mode", havingValue = "sql", matchIfMissing = true)
 public class ViolationStrikeRecorder {
 
-    /** Strikes tolerated before the attempt is invalidated. */
-    public static final int STRIKE_LIMIT = 3;
-
-    /**
-     * Unidentified sounds allowed before they start costing strikes.
-     *
-     * <p>A cough, a sneeze, a chair — once or twice across an hour is a person
-     * sitting in a room, and an exam that ends on it is measuring the candidate's
-     * throat. What is not innocent is the same thing happening again and again:
-     * repetition is the whole difference between a noise and a signal to someone
-     * out of frame, and it is the only part of this a microphone can actually
-     * establish. So the first {@value} are recorded and forgiven; from the next
-     * one on, each costs a strike like any other detection.</p>
-     *
-     * <p>Counted per attempt rather than over a rolling window, because that is
-     * the version a candidate can be told in one sentence and a support desk can
-     * defend without replaying timestamps.</p>
-     */
-    public static final int UNIDENTIFIED_SOUND_GRACE = 2;
-
     /** Matches an optional RFC 2397 data-URI prefix on an inbound frame. */
     private static final Pattern DATA_URI_PREFIX =
             Pattern.compile("^data:(?<mime>[\\w.+-]+/[\\w.+-]+)?(;charset=[\\w-]+)?;base64,", Pattern.CASE_INSENSITIVE);
@@ -77,6 +60,7 @@ public class ViolationStrikeRecorder {
     private final ProctorEvidenceRepository proctorEvidenceRepository;
     private final ProctorEvidenceStorageService proctorEvidenceStorageService;
     private final ExamInvalidationHandler examInvalidationHandler;
+    private final ProctoringPolicyService proctoringPolicyService;
 
     /**
      * Records one violation against a session the caller owns.
@@ -89,6 +73,9 @@ public class ViolationStrikeRecorder {
      * that row, and each one observes the committed count of its predecessor. The
      * ownership check is performed against the pre-locked lookup, so the lock is
      * only ever taken for a caller already proven to own the session.</p>
+     *
+     * <p>The rules are the ones captured when the attempt started, so an
+     * administrator's change never alters an attempt already under way.</p>
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public ViolationLogResponse record(String callerEmail, ViolationRequestDTO request) {
@@ -98,26 +85,65 @@ public class ViolationStrikeRecorder {
         ExamSession session = examSessionRepository.findByIdForUpdate(unlockedSession.getId())
                 .orElseThrow(() -> new ResourceNotFoundException("Exam session not found"));
 
+        return recordOnLockedSession(session, request);
+    }
+
+    /**
+     * Records a violation the server detected itself rather than one a client
+     * reported — the attempt open in two places, say.
+     *
+     * <p>Addressed by session id alone, with no client-supplied exam or student
+     * id to check: nothing here came from the candidate's browser. Otherwise the
+     * same rules, the same row lock and the same {@code REQUIRES_NEW} durability
+     * as {@link #record}.</p>
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public ViolationLogResponse recordDetectedByServer(Long sessionId, ViolationType violationType, String description) {
+        ExamSession session = examSessionRepository.findByIdForUpdate(sessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Exam session not found"));
+
+        ViolationRequestDTO request = new ViolationRequestDTO(
+                session.getExam().getId(), session.getUser().getUserId(), violationType, null, description, null);
+        return recordOnLockedSession(session, request);
+    }
+
+    /** Applies the attempt's rules to one detection, on a session this transaction holds locked. */
+    private ViolationLogResponse recordOnLockedSession(ExamSession session, ViolationRequestDTO request) {
+        EffectiveProctoringPolicy policy = proctoringPolicyService.resolveForSession(session);
+        int strikeLimit = policy.strikeLimit();
+
         // A session invalidated by a racing detection must not accrue further strikes.
         if (session.getSessionStatus() != ExamStatus.IN_PROGRESS) {
-            return alreadyTerminatedResponse(session, request);
+            return alreadyTerminatedResponse(session, request, strikeLimit);
+        }
+
+        ViolationEnforcement enforcement = policy.enforcementFor(request.violationType());
+
+        /*
+         * Switched off for this exam. Only a client still running on rules it
+         * loaded before an admin changed them raises one, and recording it would
+         * put a detection on the candidate's record that the rules they were
+         * shown said was not monitored.
+         */
+        if (enforcement == ViolationEnforcement.DISABLED) {
+            return notMonitoredResponse(session, request, strikeLimit);
         }
 
         /*
-         * Low-confidence detections are recorded with their evidence but left out
-         * of the strike counter. Gaze direction is inferred from a couple of pixels
-         * of iris displacement and camera geometry from face proportions; neither
-         * is sound enough to end an attempt on its own, and three of them in quick
-         * succession must not be able to.
+         * Record-only detections keep their evidence but stay out of the strike
+         * counter. By default that is gaze direction and camera geometry, inferred
+         * from a couple of pixels of iris displacement and from face proportions;
+         * neither is sound enough to end an attempt on its own, and three of them
+         * in quick succession must not be able to.
          */
-        boolean reviewOnlyType = !request.violationType().countsAsStrike();
-        boolean forgivenSound = !reviewOnlyType && withinUnidentifiedSoundGrace(session, request.violationType());
-        boolean countsAsStrike = !reviewOnlyType && !forgivenSound;
+        boolean recordOnly = enforcement == ViolationEnforcement.RECORD_ONLY;
+        boolean forgivenSound = !recordOnly && withinUnidentifiedSoundGrace(session, request.violationType(), policy);
+        boolean countsAsStrike = !recordOnly && !forgivenSound;
         int strikeCount = countsAsStrike ? session.getViolationCount() + 1 : session.getViolationCount();
-        boolean terminated = countsAsStrike && strikeCount >= STRIKE_LIMIT;
+        boolean terminated = countsAsStrike && strikeCount >= strikeLimit;
 
         ProctoringAction actionTaken;
-        if (reviewOnlyType) {
+        if (recordOnly) {
             actionTaken = ProctoringAction.FLAGGED_FOR_REVIEW;
         } else if (forgivenSound) {
             // Not FLAGGED_FOR_REVIEW: nothing about this detection is uncertain.
@@ -136,12 +162,13 @@ public class ViolationStrikeRecorder {
                 .examSession(session)
                 .violationType(request.violationType())
                 /*
-                 * The strike this detection produced, or 0 for a review-only type
-                 * that produced none. 0 was rejected by the original column
-                 * constraint, which took every detection to be a strike, so every
-                 * review-only violation logged before the candidate earned their
-                 * first strike was lost on insert -- silently, because the write
-                 * is asynchronous and the API had already answered. See V22.
+                 * The strike this detection produced, or the unchanged count for a
+                 * record-only type that produced none -- 0 before the first real
+                 * strike. 0 was rejected by the original column constraint, which
+                 * took every detection to be a strike, so every record-only
+                 * violation logged before the candidate earned their first strike
+                 * was lost on insert -- silently, because the write is asynchronous
+                 * and the API had already answered. See V22.
                  */
                 .violationLevel(strikeCount)
                 .description(buildDescription(request))
@@ -151,7 +178,7 @@ public class ViolationStrikeRecorder {
 
         Long evidenceId = persistEvidence(session, violation, request, detectedAt);
 
-        // Left untouched for a review-only detection: the session row carries the
+        // Left untouched when nothing was counted: the session row carries the
         // strike count, and writing an unchanged value back would be a pointless
         // update on a row every competing detection is serialising against.
         if (countsAsStrike) {
@@ -168,21 +195,21 @@ public class ViolationStrikeRecorder {
         }
 
         log.info("AI proctoring violation recorded: sessionId={} type={} strike={}/{} action={} evidence={}",
-                session.getId(), request.violationType(), strikeCount, STRIKE_LIMIT, actionTaken, evidenceId != null);
+                session.getId(), request.violationType(), strikeCount, strikeLimit, actionTaken, evidenceId != null);
 
         return new ViolationLogResponse(
                 violation.getId(),
                 session.getId(),
                 request.violationType(),
                 strikeCount,
-                STRIKE_LIMIT,
-                Math.max(0, STRIKE_LIMIT - strikeCount),
+                strikeLimit,
+                Math.max(0, strikeLimit - strikeCount),
                 terminated,
                 actionTaken,
                 evidenceId != null,
                 evidenceId,
                 detectedAt,
-                buildOutcomeMessage(countsAsStrike, forgivenSound, terminated, strikeCount));
+                buildOutcomeMessage(countsAsStrike, forgivenSound, terminated, strikeCount, policy));
     }
 
     /**
@@ -192,14 +219,15 @@ public class ViolationStrikeRecorder {
      * <p>Read inside the same transaction that holds the session row lock, so two
      * detections racing each other cannot both see the same "prior" count and
      * both be forgiven. Only prior rows are counted — this one has not been
-     * written yet — so the grace is spent by the {@code GRACE + 1}-th sound.</p>
+     * written yet — so the grace is spent by the {@code grace + 1}-th sound.</p>
      */
-    private boolean withinUnidentifiedSoundGrace(ExamSession session, ViolationType violationType) {
-        if (violationType != ViolationType.SOUND_DETECTED) {
+    private boolean withinUnidentifiedSoundGrace(ExamSession session, ViolationType violationType,
+            EffectiveProctoringPolicy policy) {
+        if (violationType != ViolationType.SOUND_DETECTED || policy.unidentifiedSoundGrace() == 0) {
             return false;
         }
         long alreadyHeard = violationRepository.countByExamSessionAndViolationType(session, violationType);
-        return alreadyHeard < UNIDENTIFIED_SOUND_GRACE;
+        return alreadyHeard < policy.unidentifiedSoundGrace();
     }
 
     /**
@@ -211,7 +239,9 @@ public class ViolationStrikeRecorder {
      * behaviour is unobserved.</p>
      */
     private String buildOutcomeMessage(boolean countsAsStrike, boolean forgivenSound,
-            boolean terminated, int strikeCount) {
+            boolean terminated, int strikeCount, EffectiveProctoringPolicy policy) {
+        int strikeLimit = policy.strikeLimit();
+
         /*
          * Told plainly that the next one bites. A candidate who hears "no strike
          * was recorded" and nothing else learns that noise is free, which is the
@@ -219,21 +249,22 @@ public class ViolationStrikeRecorder {
          * to conceal that the room is being listened to.
          */
         if (forgivenSound) {
+            int grace = policy.unidentifiedSoundGrace();
             return ("An unidentified sound was recorded but not counted. Unidentified sounds are "
-                    + "forgiven %d times per attempt; the next one will count as a strike. "
+                    + "forgiven %d %s per attempt; the next one will count as a strike. "
                     + "You currently have %d of %d.")
-                    .formatted(UNIDENTIFIED_SOUND_GRACE, strikeCount, STRIKE_LIMIT);
+                    .formatted(grace, grace == 1 ? "time" : "times", strikeCount, strikeLimit);
         }
         if (!countsAsStrike) {
             return "Flagged for invigilator review. No strike was recorded; you currently have %d of %d."
-                    .formatted(strikeCount, STRIKE_LIMIT);
+                    .formatted(strikeCount, strikeLimit);
         }
         if (terminated) {
             return "Strike %d of %d recorded. The exam has been terminated and the attempt invalidated."
-                    .formatted(STRIKE_LIMIT, STRIKE_LIMIT);
+                    .formatted(strikeLimit, strikeLimit);
         }
         return "Strike %d of %d recorded. %d more will terminate the exam."
-                .formatted(strikeCount, STRIKE_LIMIT, STRIKE_LIMIT - strikeCount);
+                .formatted(strikeCount, strikeLimit, strikeLimit - strikeCount);
     }
 
     /**
@@ -262,7 +293,8 @@ public class ViolationStrikeRecorder {
     }
 
     /** Idempotent-ish short circuit for detections that arrive after termination. */
-    private ViolationLogResponse alreadyTerminatedResponse(ExamSession session, ViolationRequestDTO request) {
+    private ViolationLogResponse alreadyTerminatedResponse(ExamSession session, ViolationRequestDTO request,
+            int strikeLimit) {
         boolean invalidated = session.getSessionStatus() == ExamStatus.INVALIDATED;
         log.debug("Ignoring violation for non-active session: sessionId={} status={} type={}",
                 session.getId(), session.getSessionStatus(), request.violationType());
@@ -272,8 +304,8 @@ public class ViolationStrikeRecorder {
                 session.getId(),
                 request.violationType(),
                 session.getViolationCount(),
-                STRIKE_LIMIT,
-                Math.max(0, STRIKE_LIMIT - session.getViolationCount()),
+                strikeLimit,
+                Math.max(0, strikeLimit - session.getViolationCount()),
                 invalidated,
                 invalidated ? ProctoringAction.EXAM_TERMINATED : ProctoringAction.LOGGED,
                 false,
@@ -282,6 +314,28 @@ public class ViolationStrikeRecorder {
                 invalidated
                         ? "The exam was already terminated; no further strikes are recorded."
                         : "The session is no longer active; the violation was not counted.");
+    }
+
+    /** A detection of a type this exam's policy has switched off: nothing is written. */
+    private ViolationLogResponse notMonitoredResponse(ExamSession session, ViolationRequestDTO request,
+            int strikeLimit) {
+        log.debug("Ignoring violation the exam's policy does not monitor: sessionId={} type={}",
+                session.getId(), request.violationType());
+
+        return new ViolationLogResponse(
+                null,
+                session.getId(),
+                request.violationType(),
+                session.getViolationCount(),
+                strikeLimit,
+                Math.max(0, strikeLimit - session.getViolationCount()),
+                false,
+                ProctoringAction.LOGGED,
+                false,
+                null,
+                Instant.now(),
+                "This check is switched off for this exam and nothing was recorded. You currently have %d of %d."
+                        .formatted(session.getViolationCount(), strikeLimit));
     }
 
     /**

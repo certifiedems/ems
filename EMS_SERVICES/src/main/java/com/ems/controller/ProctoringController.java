@@ -16,17 +16,21 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import com.ems.dto.request.ExamHeartbeatRequest;
 import com.ems.dto.request.RecordingMetadataRequest;
 import com.ems.dto.request.SessionMonitoringUpdateRequest;
 import com.ems.dto.request.ViolationReportRequest;
 import com.ems.dto.response.ApiResponse;
+import com.ems.dto.response.CandidateProctoringPolicyResponse;
 import com.ems.dto.response.ProctorEvidenceResponse;
 import com.ems.dto.response.ProctoringSessionResponse;
 import com.ems.dto.response.VideoRecordingResponse;
 import com.ems.dto.response.ViolationResponse;
 import com.ems.dto.response.ViolationSummaryResponse;
 import com.ems.exception.UnauthorizedException;
+import com.ems.service.ExamHeartbeatService;
 import com.ems.service.ProctorEvidenceContent;
+import com.ems.service.ProctoringPolicyService;
 import com.ems.service.ProctoringService;
 import com.ems.util.CorrelationIdUtil;
 
@@ -41,6 +45,8 @@ import lombok.RequiredArgsConstructor;
 public class ProctoringController {
 
     private final ProctoringService proctoringService;
+    private final ProctoringPolicyService proctoringPolicyService;
+    private final ExamHeartbeatService examHeartbeatService;
 
     @PostMapping("/sessions/{sessionId}/recordings")
     public ResponseEntity<ApiResponse<VideoRecordingResponse>> recordVideoMetadata(
@@ -78,6 +84,39 @@ public class ProctoringController {
         String email = requireUser(authentication);
         return ok("Violation summary fetched",
                 proctoringService.getSessionViolationSummary(email, sessionId));
+    }
+
+    /**
+     * The exam page's heartbeat: where the session stands, plus the check that
+     * the attempt is not open in two places at once.
+     *
+     * <p>A POST because it records which copy of the exam page is alive; the
+     * summary above stays a plain read.</p>
+     */
+    @PostMapping("/sessions/{sessionId}/heartbeat")
+    public ResponseEntity<ApiResponse<ViolationSummaryResponse>> heartbeat(
+            Authentication authentication,
+            @PathVariable Long sessionId,
+            @Valid @RequestBody ExamHeartbeatRequest request) {
+        String email = requireUser(authentication);
+        return ok("Heartbeat recorded",
+                examHeartbeatService.heartbeat(email, sessionId, request.clientId()));
+    }
+
+    /**
+     * The proctoring rules an application's exam runs under: which detections the
+     * exam client raises, the sound thresholds, and the strike limit.
+     *
+     * <p>Keyed by application because that is all the exam page has before an
+     * attempt exists, and the pre-start checks already depend on these rules.</p>
+     */
+    @GetMapping("/policy/applications/{applicationId}")
+    public ResponseEntity<ApiResponse<CandidateProctoringPolicyResponse>> getApplicationPolicy(
+            Authentication authentication,
+            @PathVariable Long applicationId) {
+        String email = requireUser(authentication);
+        return ok("Proctoring rules fetched",
+                proctoringPolicyService.getPolicyForApplication(email, applicationId));
     }
 
     @PutMapping("/sessions/{sessionId}/monitoring")

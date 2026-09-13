@@ -25,6 +25,56 @@ const HEARTBEAT_FAILURE_THRESHOLD = 2
 /** Grace period before a browser-reported offline event becomes a violation. */
 const OFFLINE_GRACE_MS = 5000
 
+/** How often page integrity is inspected while the exam is live. */
+const INTEGRITY_POLL_MS = 1000
+
+/** How long after a DOM change the watermark is inspected, so React's own commit has settled. */
+const INTEGRITY_SETTLE_MS = 500
+
+/** How long developer tools must stay open before it is reported. */
+const DEVTOOLS_SUSTAIN_MS = 3000
+
+/** Minimum spacing between two reports of the same tampering signal while it persists. */
+const TAMPER_REPORT_COOLDOWN_MS = 30000
+
+const WATERMARK_SELECTOR = '[data-proctor-overlay="watermark"]'
+
+/** Whether the watermark is on the page but no longer doing its job. */
+const isWatermarkHidden = (element) => {
+  const style = window.getComputedStyle(element)
+  return style.display === 'none'
+    || style.visibility === 'hidden'
+    || Number.parseFloat(style.opacity) < 0.01
+    || style.backgroundImage === 'none'
+}
+
+const EXAM_CLIENT_ID_KEY = 'ems.exam.clientId'
+
+/** Used when sessionStorage is unavailable: stable for this page load at least. */
+let fallbackClientId = null
+
+/**
+ * This copy of the exam page, for the server's two-places-at-once check.
+ *
+ * Kept in sessionStorage, which belongs to one tab and survives a reload:
+ * reloading the exam is the same copy, and a second tab or browser is another.
+ */
+const examClientId = () => {
+  const draw = () => globalThis.crypto?.randomUUID?.()
+    || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+  try {
+    let id = window.sessionStorage.getItem(EXAM_CLIENT_ID_KEY)
+    if (!id) {
+      id = draw()
+      window.sessionStorage.setItem(EXAM_CLIENT_ID_KEY, id)
+    }
+    return id
+  } catch {
+    fallbackClientId = fallbackClientId || draw()
+    return fallbackClientId
+  }
+}
+
 /**
  * @param {object}   params
  * @param {boolean}  params.enabled
@@ -34,6 +84,9 @@ const OFFLINE_GRACE_MS = 5000
  *        A getter rather than a snapshot: the guard has to know what we own at
  *        the instant a MediaRecorder is constructed, and a memoised object can
  *        still be one render stale at exactly that moment.
+ * @param {Function} [params.isDeveloperToolsOpen] - the exam page's own developer
+ *        tools check, reused so the page's Start gate and this tamper check can
+ *        never disagree about what "open" means.
  * @param {Function} [params.onSessionState] - called with each successful
  *        heartbeat payload: { strikeCount, strikeLimit, examTerminated, ... }.
  *        The heartbeat is the only channel that reports the server's view on a
@@ -41,7 +94,9 @@ const OFFLINE_GRACE_MS = 5000
  *        one place a client can find out about a strike whose write reply was
  *        lost, or catch up after a reload.
  */
-const useBrowserHardening = ({ enabled, sessionId, onViolation, getOwnedStreams, onSessionState }) => {
+const useBrowserHardening = ({
+  enabled, sessionId, onViolation, getOwnedStreams, onSessionState, isDeveloperToolsOpen
+}) => {
   const [networkStatus, setNetworkStatus] = useState(
     typeof navigator !== 'undefined' && navigator.onLine ? 'online' : 'offline'
   )
@@ -55,6 +110,7 @@ const useBrowserHardening = ({ enabled, sessionId, onViolation, getOwnedStreams,
   const onViolationRef = useRef(onViolation)
   const getOwnedStreamsRef = useRef(getOwnedStreams)
   const onSessionStateRef = useRef(onSessionState)
+  const isDeveloperToolsOpenRef = useRef(isDeveloperToolsOpen)
 
   useEffect(() => {
     enabledRef.current = enabled
@@ -71,6 +127,10 @@ const useBrowserHardening = ({ enabled, sessionId, onViolation, getOwnedStreams,
   useEffect(() => {
     getOwnedStreamsRef.current = getOwnedStreams
   }, [getOwnedStreams])
+
+  useEffect(() => {
+    isDeveloperToolsOpenRef.current = isDeveloperToolsOpen
+  }, [isDeveloperToolsOpen])
 
   const emit = useCallback((type, description, severity = 'HIGH') => {
     if (!enabledRef.current) {
@@ -140,7 +200,7 @@ const useBrowserHardening = ({ enabled, sessionId, onViolation, getOwnedStreams,
       }
 
       try {
-        const response = await proctoringAPI.heartbeat(sessionId)
+        const response = await proctoringAPI.heartbeat(sessionId, examClientId())
         failureCountRef.current = 0
         setHeartbeatHealthy(true)
 
@@ -304,6 +364,110 @@ const useBrowserHardening = ({ enabled, sessionId, onViolation, getOwnedStreams,
         navigator.mediaDevices.getDisplayMedia = originalGetDisplayMedia
       }
       HTMLCanvasElement.prototype.toDataURL = originalToDataURL
+    }
+  }, [enabled, emit])
+
+  /* ---------------------------------------------------------------- */
+  /* Requirement 8 — page integrity                                    */
+  /* ---------------------------------------------------------------- */
+
+  /*
+   * Two signs the exam page itself is being interfered with, reported as
+   * SESSION_TAMPERING: the proctoring watermark removed or hidden, and developer
+   * tools open during the attempt. Neither happens to a candidate using the page
+   * as delivered.
+   */
+  useEffect(() => {
+    if (!enabled || typeof window === 'undefined' || typeof MutationObserver === 'undefined') {
+      return undefined
+    }
+
+    const lastReportedAt = { watermark: 0, devtools: 0 }
+    const reportTampering = (signal, description) => {
+      const now = Date.now()
+      if (now - lastReportedAt[signal] < TAMPER_REPORT_COOLDOWN_MS) {
+        return
+      }
+      lastReportedAt[signal] = now
+      emit('SESSION_TAMPERING', description, 'HIGH')
+    }
+
+    /*
+     * The exam is marked live a moment before the exam screen — and the
+     * watermark with it — has rendered. So an absent watermark only counts once
+     * it has been seen on the page; before that it simply has not arrived. A
+     * watermark hidden from the start is still caught, because hiding it needs it
+     * to be there.
+     */
+    let watermarkMounted = false
+    let settleTimer = null
+    const inspectWatermark = () => {
+      settleTimer = null
+      if (!enabledRef.current) {
+        return
+      }
+      const watermark = document.querySelector(WATERMARK_SELECTOR)
+      if (!watermark) {
+        if (watermarkMounted) {
+          reportTampering('watermark', 'The proctoring watermark was removed from the exam page.')
+        }
+        return
+      }
+      watermarkMounted = true
+      if (isWatermarkHidden(watermark)) {
+        reportTampering('watermark', 'The proctoring watermark was hidden on the exam page.')
+      }
+    }
+    // Settled rather than immediate, so React replacing the page at the end of the
+    // exam is disconnected below before it can be mistaken for a removal.
+    const scheduleWatermarkInspection = () => {
+      if (settleTimer === null) {
+        settleTimer = setTimeout(inspectWatermark, INTEGRITY_SETTLE_MS)
+      }
+    }
+
+    const observer = new MutationObserver(scheduleWatermarkInspection)
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden', 'data-proctor-overlay']
+    })
+
+    /*
+     * Developer tools, by the same window measurement that already blocks Start.
+     * Browser zoom moves that measurement too, but changes the pixel ratio along
+     * with it; while the ratio differs from the one the exam began with, the
+     * reading is not trusted. Failing that way can only miss a report.
+     */
+    const baselinePixelRatio = window.devicePixelRatio
+    let devtoolsOpenSince = null
+    const inspectDevtools = () => {
+      const isOpen = isDeveloperToolsOpenRef.current
+      if (!enabledRef.current || typeof isOpen !== 'function'
+        || window.devicePixelRatio !== baselinePixelRatio || !isOpen()) {
+        devtoolsOpenSince = null
+        return
+      }
+      devtoolsOpenSince = devtoolsOpenSince ?? Date.now()
+      if (Date.now() - devtoolsOpenSince >= DEVTOOLS_SUSTAIN_MS) {
+        reportTampering('devtools', 'Developer tools were open during the exam.')
+      }
+    }
+
+    // The timer also re-inspects the watermark, which catches a stylesheet
+    // injected to hide it without touching the element itself.
+    const integrityTimer = setInterval(() => {
+      inspectDevtools()
+      scheduleWatermarkInspection()
+    }, INTEGRITY_POLL_MS)
+
+    return () => {
+      observer.disconnect()
+      clearInterval(integrityTimer)
+      if (settleTimer !== null) {
+        clearTimeout(settleTimer)
+      }
     }
   }, [enabled, emit])
 

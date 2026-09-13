@@ -67,4 +67,32 @@ public class CertificationApplication extends BaseAuditEntity {
 
     @Column(name = "remarks", length = 1000)
     private String remarks;
+
+    /**
+     * Which sitting on its payment this application is: 1 for the application
+     * the fee was paid against, 2 and up for the retakes that payment covers.
+     */
+    @Builder.Default
+    @Column(name = "attempt_number", nullable = false)
+    private Integer attemptNumber = 1;
+
+    /**
+     * How many sittings the payment behind this application covers.
+     *
+     * <p>Fixed when the payment succeeds, from the level's attempt policy at that
+     * moment, and copied onto each retake: an administrator's later change
+     * reaches payments made after it, never one already made. Null until paid;
+     * see {@link com.ems.util.ExamAttemptAllowance} for how that is read.</p>
+     */
+    @Column(name = "attempts_allowed")
+    private Integer attemptsAllowed;
+
+    /**
+     * The application whose payment covers this one; null on that application
+     * itself. Always the paid application rather than the attempt before, so
+     * every retake reaches the payment in one step.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "paid_application_ref")
+    private CertificationApplication paidApplication;
 }

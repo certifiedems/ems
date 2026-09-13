@@ -477,7 +477,7 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 				.orElse(null);
 
 		String message = switch (violation.getActionTaken()) {
-			case EXAM_TERMINATED -> "3rd violation detected. Exam terminated automatically.";
+			case EXAM_TERMINATED -> "Strike limit reached. Exam terminated automatically.";
 			default -> "Violation recorded. Warning issued to candidate.";
 		};
 

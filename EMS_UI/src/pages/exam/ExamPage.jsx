@@ -10,7 +10,9 @@ import {
 } from '@mui/material'
 import Webcam from 'react-webcam'
 import { startExamStart, startExamSuccess, startExamFailure, loadSessionQuestion, endExamSession } from '../../store/slices/examSlice'
-import { initializeProctoring, recordViolation, syncViolationCount } from '../../store/slices/proctoringSlice'
+import {
+  initializeProctoring, markStrikeLimitReached, recordViolation, setStrikeLimit, syncViolationCount
+} from '../../store/slices/proctoringSlice'
 import { examAPI } from '../../api/examAPI'
 import { userAPI } from '../../api/userAPI'
 import { proctoringAPI } from '../../api/proctoringAPI'
@@ -29,7 +31,11 @@ import useSoundEnvironmentMonitor from '../../hooks/useSoundEnvironmentMonitor'
 import { markSessionActive } from '../../hooks/useIdleTimeout'
 import { captureEvidenceFrame } from '../../utils/evidenceCapture'
 import { PROCTOR_VIDEO_CONSTRAINTS, describeFramingReasons } from '../../utils/proctorCapture'
+import {
+  BUILT_IN_POLICY, isMonitored, requiresFullscreen, requiresScreenShare, soundThresholdDb
+} from '../../utils/proctoringRules'
 import { bookingWindowClosed, examWindowState, formatCountdown, formatExamClock, formatExamSlot } from '../../utils/examJourney'
+import { SUPPORT_EMAIL } from '../../config/support'
 import VideocamIcon from '@mui/icons-material/Videocam'
 import VideocamOffIcon from '@mui/icons-material/VideocamOff'
 import MicIcon from '@mui/icons-material/Mic'
@@ -73,7 +79,7 @@ const SOUND_VIOLATION_BY_CLASS = {
    * a strike, but not the first ones: the server forgives the opening few of an
    * attempt and counts the rest, because a cough does not repeat on a schedule
    * and a conversation with someone off-camera does. Two gates decide what even
-   * reaches that rule — the loudness floor below and the cooldown above — so
+   * reaches that rule — the exam's loudness floor and the cooldown below — so
    * what the server is counting is disturbances, not keystrokes.
    */
   IMPULSE: 'SOUND_DETECTED',
@@ -83,7 +89,7 @@ const SOUND_VIOLATION_BY_CLASS = {
 /**
  * Per-type minimum spacing between violations of that type.
  *
- * Long enough that one noisy episode cannot drain all three strikes. Sustained
+ * Long enough that one noisy episode cannot drain every strike. Sustained
  * noise gets the longest window because the engine deliberately re-emits a
  * drone every 15s rather than reporting it once, so without this a television
  * left on would terminate an exam by itself.
@@ -95,18 +101,20 @@ const SOUND_COOLDOWN_MS = {
 }
 
 /**
- * How far above the room floor an unidentified sound must peak to be recorded.
- *
- * Applies only to the unidentified classes, and exists because of one specific
- * candidate: the one with a mechanical keyboard. Every keystroke is a genuine
- * impulse the engine is right to detect, and now that repeated unidentified
- * sounds cost strikes, reporting them would spend that candidate's grace on the
- * sound of typing and then end their exam. This threshold is what separates a
- * disturbance from the noise of working.
- *
- * A voice is held to no such bar — a quiet one is the case that matters most.
+ * How long the camera may send nothing before it counts as off. Cameras go
+ * quiet for a moment while they renegotiate; a privacy switch, or another
+ * application taking the device, does not end after a moment.
  */
-const UNIDENTIFIED_SOUND_MIN_ABOVE_FLOOR_DB = 15
+const CAMERA_MUTE_GRACE_MS = 5000
+
+/** How often a camera that stays off is reported again. */
+const CAMERA_OFF_REPEAT_MS = 30000
+
+/**
+ * Violations the server records itself. This page never raises them, so it
+ * learns of one only from the heartbeat, and adds it to the timeline there.
+ */
+const SERVER_DETECTED_VIOLATIONS = new Set(['MULTIPLE_LOGIN'])
 
 /** Engine class names as they appear in the candidate-facing engine readout. */
 const SOUND_CLASS_LABELS = {
@@ -256,9 +264,17 @@ const ExamPage = () => {
   const mediaRecorderRef = useRef(null)
   const recordedChunksRef = useRef([])
   const autoTerminateRef = useRef(false)
+  /*
+   * Which attempt on its payment this is, and how many the payment covers, as
+   * the start call reported them. A ref because the termination notice reads it
+   * after the session has already been cleared from the store.
+   */
+  const attemptAllowanceRef = useRef({ attemptNumber: 1, attemptsAllowed: 1 })
 
   const { currentSession, sessionQuestions, isLoading, examInProgress, error: examError } = useSelector((state) => state.exam)
-  const { violationCount, isRecording, violations } = useSelector((state) => state.proctoring)
+  const { violationCount, strikeLimit, isRecording, violations } = useSelector((state) => state.proctoring)
+  /** Strikes the candidate can still take before the attempt ends. */
+  const strikesLeft = Math.max(strikeLimit - violationCount, 0)
   const { user } = useSelector((state) => state.auth)
 
   const [currentQuestionNumber, setCurrentQuestionNumber] = useState(1)
@@ -294,6 +310,10 @@ const ExamPage = () => {
   // Flips once the webcam element is actually producing frames, which is the
   // signal the AI worker needs before it is worth loading models.
   const [proctorStreamReady, setProctorStreamReady] = useState(false)
+  /** The live proctoring camera stream, watched for the camera being turned off mid-exam. */
+  const [proctorStream, setProctorStream] = useState(null)
+  /** True while the proctoring camera is off during the attempt. */
+  const [cameraOff, setCameraOff] = useState(false)
   /**
    * Bumped by the "Recheck camera" control; used as the <Webcam> key.
    *
@@ -335,6 +355,15 @@ const ExamPage = () => {
    * fixes it — moving the booking.
    */
   const [booking, setBooking] = useState(null)
+  /**
+   * The proctoring rules this attempt runs under, as an administrator set them:
+   * which detections are raised at all, how loud a sound must be, and the strike
+   * limit. Starts at the built-in rules, so a page that cannot reach the server
+   * proctors the way an exam with no saved rules is proctored; the server judges
+   * every strike by the attempt's own rules either way.
+   */
+  const [proctoringPolicy, setProctoringPolicy] = useState(BUILT_IN_POLICY)
+  const [proctoringPolicyLoaded, setProctoringPolicyLoaded] = useState(false)
 
   /**
    * Points at the live <video> node inside react-webcam. The AI worker reads
@@ -386,6 +415,16 @@ const ExamPage = () => {
   const blockedActionToastTsRef = useRef(0)
   const examEndingRef = useRef(false)
   const proctoringWarmupUntilRef = useRef(0)
+  /**
+   * Mirrors `proctoringPolicy` for the handlers installed before it loaded — the
+   * worklet port, the worker, the document listeners. Same stale-closure trap as
+   * `examInProgressRef`.
+   */
+  const proctoringPolicyRef = useRef(BUILT_IN_POLICY)
+  /** Why the camera counts as off, for the report sent when it goes off. */
+  const cameraOffReasonRef = useRef('')
+  /** Violation total at the previous heartbeat; null until the first one sets the baseline. */
+  const heartbeatTotalRef = useRef(null)
 
   useEffect(() => {
     examInProgressRef.current = examInProgress
@@ -423,6 +462,52 @@ const ExamPage = () => {
     })()
     return () => { mounted = false }
   }, [applicationId])
+
+  /**
+   * Fetches the proctoring rules for this application and adopts them.
+   *
+   * Before the attempt exists these are the exam's current rules; once it has
+   * started they are the rules captured at its start. That is why this runs again
+   * straight after a start: an administrator may have changed the exam's rules
+   * while the candidate sat on the pre-start screen.
+   */
+  const loadProctoringPolicy = useCallback(async () => {
+    try {
+      const res = await proctoringAPI.getPolicyForApplication(applicationId)
+      const policy = res.data.data
+      if (policy) {
+        proctoringPolicyRef.current = policy
+        setProctoringPolicy(policy)
+        dispatch(setStrikeLimit(policy.strikeLimit))
+      }
+    } catch (err) {
+      // The rules already in force stay in force. The server judges every strike
+      // by the attempt's own rules regardless of what this page believes.
+      console.error('Failed to load proctoring rules', err)
+    }
+  }, [applicationId, dispatch])
+
+  /*
+   * Loaded before Start can be pressed, because the start sequence depends on
+   * it: screen sharing and fullscreen are only demanded while the rules watch
+   * for their violations.
+   */
+  useEffect(() => {
+    let mounted = true
+    proctoringPolicyRef.current = BUILT_IN_POLICY
+    setProctoringPolicy(BUILT_IN_POLICY)
+    setProctoringPolicyLoaded(false)
+    dispatch(setStrikeLimit(BUILT_IN_POLICY.strikeLimit))
+    loadProctoringPolicy().finally(() => {
+      if (mounted) {
+        setProctoringPolicyLoaded(true)
+      }
+    })
+    return () => { mounted = false }
+  }, [loadProctoringPolicy, dispatch])
+
+  const screenShareRequired = requiresScreenShare(proctoringPolicy)
+  const fullscreenRequired = requiresFullscreen(proctoringPolicy)
 
   /*
    * A running attempt is a rejoin, not a new sitting, so it is never gated by
@@ -470,6 +555,9 @@ const ExamPage = () => {
   useEffect(() => {
     proctorVideoRef.current = null
     setProctorStreamReady(false)
+    // The old instance's tracks are stopped, not ended by the camera: watching
+    // them would read a camera the page put down as one the candidate turned off.
+    setProctorStream(null)
   }, [testStarted])
 
   const lockEscapeKeyInFullscreen = useCallback(async () => {
@@ -626,14 +714,18 @@ const ExamPage = () => {
     examEndingRef.current = false
 
     // Request screen share immediately from the click handler to preserve
-    // browser user-activation requirements for getDisplayMedia.
-    const preflightScreenShare = await requestScreenShare({
-      trackViolation: false,
-      autoRetry: false
-    })
-    if (!preflightScreenShare.ok) {
-      dispatch(startExamFailure(preflightScreenShare.message))
-      return
+    // browser user-activation requirements for getDisplayMedia. Skipped when
+    // the exam's rules watch for neither screen-share violation: a share that
+    // nothing checks would only cost the candidate a permission prompt.
+    if (screenShareRequired) {
+      const preflightScreenShare = await requestScreenShare({
+        trackViolation: false,
+        autoRetry: false
+      })
+      if (!preflightScreenShare.ok) {
+        dispatch(startExamFailure(preflightScreenShare.message))
+        return
+      }
     }
 
     const started = await startExam({ skipScreenShareRequest: true })
@@ -655,7 +747,7 @@ const ExamPage = () => {
       const examData = response.data.data
 
       // Request screen share FIRST before fullscreen
-      if (!skipScreenShareRequest) {
+      if (!skipScreenShareRequest && screenShareRequired) {
         const screenShareResult = await requestScreenShare({
           trackViolation: false,
           autoRetry: false
@@ -665,9 +757,10 @@ const ExamPage = () => {
         }
       }
 
-      // Enable fullscreen mode AFTER screen sharing confirmation (exit only on submission)
+      // Enable fullscreen mode AFTER screen sharing confirmation (exit only on
+      // submission), and only when the exam's rules enforce it.
       try {
-        if (document.documentElement.requestFullscreen) {
+        if (fullscreenRequired && document.documentElement.requestFullscreen) {
           await document.documentElement.requestFullscreen({ navigationUI: 'hide' })
           await lockEscapeKeyInFullscreen()
           console.log('Fullscreen mode enabled')
@@ -677,6 +770,13 @@ const ExamPage = () => {
       }
 
       dispatch(startExamSuccess(examData))
+      attemptAllowanceRef.current = {
+        attemptNumber: examData.attemptNumber ?? 1,
+        attemptsAllowed: examData.attemptsAllowed ?? 1
+      }
+      // The attempt now carries the rules it was started under; adopt those in
+      // case they changed while this page sat on the pre-start screen.
+      void loadProctoringPolicy()
       proctoringWarmupUntilRef.current = Date.now() + 10000
       dispatch(initializeProctoring({
         cameraEnabled: cameraPermission,
@@ -721,7 +821,9 @@ const ExamPage = () => {
     } catch (err) {
       const errorMessage = err.response?.data?.message || err.message || 'Failed to start exam'
       dispatch(startExamFailure(errorMessage))
-      if (errorMessage.includes('Re-apply and complete payment')) {
+      // Both ways back from a spent attempt start on the applications screen: a
+      // retake the payment still covers, or re-applying and paying again.
+      if (errorMessage.includes('Re-apply and complete payment') || errorMessage.includes('Start your next attempt')) {
         navigate('/exams', {
           state: {
             restartMessage: errorMessage,
@@ -929,6 +1031,10 @@ const ExamPage = () => {
         return 'SCREEN_SHARE_DENIED'
       case 'FULLSCREEN_EXIT_ATTEMPT':
         return 'FULLSCREEN_EXIT'
+      case 'WEBCAM_OFF':
+        return 'WEBCAM_OFF'
+      case 'SESSION_TAMPERING':
+        return 'SESSION_TAMPERING'
       default:
         return null
     }
@@ -953,6 +1059,13 @@ const ExamPage = () => {
 
   const reportViolationEvent = useCallback((payload) => {
     const apiViolationType = mapViolationTypeForApi(payload.type)
+
+    // Switched off by this exam's rules: not raised at all, so it neither reaches
+    // the server nor lands on the candidate's timeline as though it counted.
+    if (apiViolationType && !isMonitored(proctoringPolicyRef.current, apiViolationType)) {
+      return
+    }
+
     const examId = currentSession?.examId
     const studentId = user?.userId
     const willReport = Boolean(apiViolationType && examId && studentId)
@@ -964,7 +1077,7 @@ const ExamPage = () => {
      * which detections cost a strike — review-only types cost none, and an
      * unidentified sound costs none until the attempt's grace is spent — so
      * counting it here optimistically produces a number that is wrong the
-     * moment a forgiven sound goes through, and `violationCount >= 3` ends the
+     * moment a forgiven sound goes through, and reaching the strike limit ends the
      * exam off that wrong number. Only unreportable detections, which nothing
      * else will ever count, are still counted locally.
      */
@@ -994,6 +1107,11 @@ const ExamPage = () => {
         return
       }
 
+      // The limit before the count, which is clamped to it.
+      if (Number.isInteger(result.strikeLimit)) {
+        dispatch(setStrikeLimit(result.strikeLimit))
+      }
+
       if (Number.isInteger(result.strikeCount)) {
         dispatch(syncViolationCount(result.strikeCount))
       }
@@ -1001,7 +1119,7 @@ const ExamPage = () => {
       // The server owns the termination verdict. Honour it even if the local
       // counter disagrees, which it can after a dropped or retried request.
       if (result.isTerminated) {
-        dispatch(syncViolationCount(3))
+        dispatch(markStrikeLimitReached())
       }
     }).catch((err) => {
       console.error('Failed to persist violation:', err)
@@ -1023,15 +1141,127 @@ const ExamPage = () => {
   }), [])
 
   /** Called by react-webcam once the camera is actually delivering frames. */
-  const handleProctorStreamReady = useCallback(() => {
+  const handleProctorStreamReady = useCallback((stream) => {
     proctorVideoRef.current = webcamRef.current?.video || null
     setProctorStreamReady(Boolean(proctorVideoRef.current))
+    setProctorStream(stream || webcamRef.current?.stream || null)
+    setCameraOff(false)
   }, [])
 
   const handleProctorStreamError = useCallback((error) => {
     console.error('Proctoring camera stream failed:', error)
     proctorVideoRef.current = null
     setProctorStreamReady(false)
+    setProctorStream(null)
+    // Mid-exam, a camera that cannot be opened is a camera that is off.
+    if (examInProgressRef.current) {
+      cameraOffReasonRef.current = 'The camera could not be opened: it is unavailable or its permission was revoked.'
+      setCameraOff(true)
+    }
+  }, [])
+
+  /**
+   * Watches the proctoring camera itself, not what it shows.
+   *
+   * The AI worker judges frames, and a camera that stops sending them leaves the
+   * video element holding its last one — a candidate who switches the camera off
+   * stays "visible" to every model indefinitely. The track says so directly:
+   * `ended` when the device is unplugged, switched off or its permission revoked,
+   * and `mute` while it is attached but sending nothing (a privacy switch, a lid
+   * shutter, another application taking it). A mute counts only once it lasts.
+   *
+   * The page's own teardown cannot trip it: a track stopped by the page does not
+   * fire `ended`, and the listeners come off before a reconnect replaces it.
+   */
+  useEffect(() => {
+    const track = proctorStream?.getVideoTracks?.()[0]
+    if (!examInProgress || examSubmitted || !track || track.readyState === 'ended') {
+      return undefined
+    }
+
+    let muteTimer = null
+    const turnOff = (reason) => {
+      cameraOffReasonRef.current = reason
+      setCameraOff(true)
+    }
+    const handleEnded = () => {
+      turnOff('The camera stopped: it was disconnected, switched off, or its permission was revoked.')
+    }
+    const handleMute = () => {
+      if (muteTimer !== null) {
+        return
+      }
+      muteTimer = setTimeout(() => {
+        muteTimer = null
+        if (track.muted) {
+          turnOff(`The camera sent no video for more than ${CAMERA_MUTE_GRACE_MS / 1000} seconds.`)
+        }
+      }, CAMERA_MUTE_GRACE_MS)
+    }
+    const handleUnmute = () => {
+      clearTimeout(muteTimer)
+      muteTimer = null
+      if (track.readyState === 'live') {
+        setCameraOff(false)
+      }
+    }
+
+    track.addEventListener('ended', handleEnded)
+    track.addEventListener('mute', handleMute)
+    track.addEventListener('unmute', handleUnmute)
+    if (track.muted) {
+      handleMute()
+    }
+
+    return () => {
+      track.removeEventListener('ended', handleEnded)
+      track.removeEventListener('mute', handleMute)
+      track.removeEventListener('unmute', handleUnmute)
+      clearTimeout(muteTimer)
+    }
+  }, [proctorStream, examInProgress, examSubmitted])
+
+  /*
+   * Reported when the camera goes off and again every 30 seconds it stays off,
+   * so switching the camera off for the rest of the attempt is not one strike.
+   * Warmup is honoured like every other check: the camera changing hands between
+   * the pre-start and exam screens is not the candidate's doing.
+   */
+  useEffect(() => {
+    if (!cameraOff || !examInProgress || examSubmitted) {
+      return undefined
+    }
+    const report = (description) => {
+      if (isInProctoringWarmup()) {
+        return
+      }
+      reportViolationEventRef.current?.({
+        type: 'WEBCAM_OFF',
+        description,
+        severity: 'HIGH',
+        timestamp: new Date().toISOString()
+      })
+    }
+    report(cameraOffReasonRef.current)
+    const timerId = setInterval(() => report('The camera is still off.'), CAMERA_OFF_REPEAT_MS)
+    return () => clearInterval(timerId)
+  }, [cameraOff, examInProgress, examSubmitted]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * Re-acquires the camera mid-exam — offered only once it is already off.
+   *
+   * `handleRecheckCamera` stays out of the exam because dropping a working camera
+   * opens a gap in coverage. A camera that has already stopped is that gap, and
+   * re-acquiring it is the only way to close it; without this, the only way out
+   * of a dead camera was to keep collecting strikes until the attempt ended.
+   * `cameraOff` stays set until the new stream actually opens, so a reconnect that
+   * fails keeps being reported.
+   */
+  const handleReconnectCamera = useCallback(() => {
+    proctorVideoRef.current = null
+    setProctorStreamReady(false)
+    setProctorStream(null)
+    setCameraGeneration((generation) => generation + 1)
   }, [])
 
   /**
@@ -1087,13 +1317,13 @@ const ExamPage = () => {
    * The engine's contract is that it reports every sound it segments; this is
    * where that becomes policy. Three gates, in order of how often they fire:
    *
-   *   - Unidentified sounds have to be clearly louder than the room before they
-   *     are worth an invigilator's attention. See
-   *     REVIEW_SOUND_MIN_ABOVE_FLOOR_DB — this is the mechanical-keyboard rule.
+   *   - Its class has to be monitored under the exam's rules, and the sound has
+   *     to peak as far above the room as those rules demand for that class. For
+   *     unidentified sounds that bar is the mechanical-keyboard rule.
    *   - Sounds before the exam is live, or during the warmup the other checks
    *     already honour, are setup noise. The meter still moves for them, which
    *     is the point of showing it on the pre-start screen at all.
-   *   - Then the per-type cooldown, so one bad minute cannot spend three strikes.
+   *   - Then the per-type cooldown, so one bad minute cannot spend every strike.
    *
    * Reported through `reportViolationEventRef`, never the captured binding: this
    * is invoked from a worklet message port whose handler was installed during
@@ -1108,7 +1338,13 @@ const ExamPage = () => {
       return
     }
 
-    if (violationType === 'SOUND_DETECTED' && event.peakAboveFloorDb < UNIDENTIFIED_SOUND_MIN_ABOVE_FLOOR_DB) {
+    const policy = proctoringPolicyRef.current
+    if (!isMonitored(policy, violationType)) {
+      return
+    }
+
+    // Checked before the cooldown, so a sound too quiet to count does not spend it.
+    if (event.peakAboveFloorDb < soundThresholdDb(policy, violationType)) {
       return
     }
 
@@ -1312,12 +1548,36 @@ const ExamPage = () => {
       return
     }
 
+    if (Number.isInteger(sessionState.strikeLimit)) {
+      dispatch(setStrikeLimit(sessionState.strikeLimit))
+    }
+
     if (Number.isInteger(sessionState.strikeCount)) {
       dispatch(syncViolationCount(sessionState.strikeCount))
     }
 
     if (sessionState.examTerminated) {
-      dispatch(syncViolationCount(3))
+      dispatch(markStrikeLimitReached())
+    }
+
+    /*
+     * Violations the server recorded on its own reach the candidate only here.
+     * The first heartbeat just sets the baseline, so a rejoined attempt does not
+     * replay its history as fresh alerts.
+     */
+    if (Number.isInteger(sessionState.totalViolations)) {
+      const previousTotal = heartbeatTotalRef.current
+      heartbeatTotalRef.current = sessionState.totalViolations
+      if (previousTotal !== null
+        && sessionState.totalViolations > previousTotal
+        && SERVER_DETECTED_VIOLATIONS.has(sessionState.lastViolationType)) {
+        dispatch(recordViolation({
+          type: sessionState.lastViolationType,
+          description: sessionState.lastActionMessage,
+          severity: 'HIGH',
+          countsLocally: false
+        }))
+      }
     }
   }, [dispatch])
 
@@ -1326,7 +1586,8 @@ const ExamPage = () => {
     sessionId: currentSession?.examSessionId,
     onViolation: reportViolationEvent,
     getOwnedStreams,
-    onSessionState: handleHeartbeatSessionState
+    onSessionState: handleHeartbeatSessionState,
+    isDeveloperToolsOpen: detectDeveloperToolsOpen
   })
 
   /*
@@ -1383,7 +1644,9 @@ const ExamPage = () => {
       if (isInProctoringWarmup()) {
         return
       }
-      if (document.hidden && examInProgress && screenShareActive && !screenShareGraceRef.current) {
+      // Without a required screen share there is no picker dialog to excuse a
+      // lost focus, so an active share only gates the check when one is required.
+      if (document.hidden && examInProgress && (screenShareActive || !screenShareRequired) && !screenShareGraceRef.current) {
         reportViolationEvent({
           type: 'TAB_SWITCH',
           description: 'User switched to a different browser tab during exam',
@@ -1398,7 +1661,7 @@ const ExamPage = () => {
       if (isInProctoringWarmup()) {
         return
       }
-      if (examInProgress && screenShareActive && !screenShareGraceRef.current) {
+      if (examInProgress && (screenShareActive || !screenShareRequired) && !screenShareGraceRef.current) {
         reportViolationEvent({
           type: 'WINDOW_BLUR',
           description: 'User minimized exam window or switched to another application',
@@ -1464,7 +1727,7 @@ const ExamPage = () => {
       document.removeEventListener('paste', preventExamInteractionCopy)
       document.removeEventListener('dragstart', preventExamInteractionCopy)
     }
-  }, [examInProgress, screenShareActive, reportViolationEvent]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [examInProgress, screenShareActive, screenShareRequired, reportViolationEvent]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Timer countdown
   useEffect(() => {
@@ -1481,15 +1744,15 @@ const ExamPage = () => {
     return () => clearInterval(timer)
   }, [examInProgress, timeLeft]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-terminate the exam when the candidate reaches 3 violations.
+  // Auto-terminate the exam when the candidate reaches the attempt's strike limit.
   useEffect(() => {
-    if (violationCount >= 3 && examInProgress && !autoTerminateRef.current) {
+    if (violationCount >= strikeLimit && examInProgress && !autoTerminateRef.current) {
       autoTerminateRef.current = true
       setShowTerminateDialog(false)
       setShowViolationAlert(false)
       handleAutoTerminateExam()
     }
-  }, [violationCount, examInProgress]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [violationCount, strikeLimit, examInProgress]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Monitor fullscreen - user should not exit until submission
   useEffect(() => {
@@ -1502,6 +1765,11 @@ const ExamPage = () => {
         // Enable enforcement only after the first confirmed fullscreen entry.
         fullscreenEnforcementReadyRef.current = true
         lockEscapeKeyInFullscreen()
+        return
+      }
+
+      // Not enforced under this exam's rules: the candidate may leave fullscreen.
+      if (!requiresFullscreen(proctoringPolicyRef.current)) {
         return
       }
 
@@ -1541,7 +1809,7 @@ const ExamPage = () => {
       const currentViolation = violations[violations.length - 1]
       if (currentViolation !== lastViolation) {
         setLastViolation(currentViolation)
-        if (violationCount < 3) {
+        if (violationCount < strikeLimit) {
           setShowViolationAlert(true)
         } else {
           setShowViolationAlert(false)
@@ -1609,6 +1877,21 @@ const ExamPage = () => {
         title: 'Eyes Off Screen',
         details: 'Your gaze moved away from the exam window — down or to the side.',
         action: 'Keep your eyes on the exam window. Do not consult notes, a second screen, or a phone.'
+      },
+      WEBCAM_OFF: {
+        title: 'Camera Turned Off',
+        details: 'Your camera stopped sending video — it was disconnected, switched off, taken by another app, or its permission was revoked.',
+        action: 'Turn the camera back on and press Reconnect beside the camera view. It keeps being recorded for as long as it stays off.'
+      },
+      SESSION_TAMPERING: {
+        title: 'Exam Page Tampering',
+        details: 'The exam page was interfered with: the proctoring watermark was removed or hidden, or developer tools were opened.',
+        action: 'Close developer tools and any extension that changes the page, and do not modify the exam page.'
+      },
+      MULTIPLE_LOGIN: {
+        title: 'Exam Open in Two Places',
+        details: 'This attempt was running in another browser, tab or device at the same time as this one.',
+        action: 'Close every other copy of the exam and continue only in this window.'
       }
     }
     return details[violation.type] || {
@@ -1914,10 +2197,13 @@ const ExamPage = () => {
   }
 
   const handleTerminationAcknowledge = () => {
+    const { attemptNumber, attemptsAllowed } = attemptAllowanceRef.current
     navigate('/exams', {
       replace: true,
       state: {
-        restartMessage: 'You received 3 proctoring violations. Your exam was terminated and you must re-apply and complete payment from the beginning to take the exam again.'
+        restartMessage: attemptNumber < attemptsAllowed
+          ? `You reached the limit of ${strikeLimit} proctoring violations and your exam was terminated. Your payment covers another attempt — start it from question 1 without paying again.`
+          : `You reached the limit of ${strikeLimit} proctoring violations. Your exam was terminated and you must re-apply and complete payment from the beginning to take the exam again.`
       }
     })
   }
@@ -2019,14 +2305,18 @@ const ExamPage = () => {
                       />}
                   <Typography variant="body2">Microphone ready</Typography>
                 </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <ScreenShareIcon fontSize="small" color="action" />
-                  <Typography variant="body2">Screen sharing will be requested before start</Typography>
-                </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <FullscreenIcon fontSize="small" color="action" />
-                  <Typography variant="body2">Exam runs in locked fullscreen mode</Typography>
-                </Box>
+                {screenShareRequired && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <ScreenShareIcon fontSize="small" color="action" />
+                    <Typography variant="body2">Screen sharing will be requested before start</Typography>
+                  </Box>
+                )}
+                {fullscreenRequired && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <FullscreenIcon fontSize="small" color="action" />
+                    <Typography variant="body2">Exam runs in locked fullscreen mode</Typography>
+                  </Box>
+                )}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                   <SecurityIcon fontSize="small" color="action" />
                   <Typography variant="body2">Proctoring violations are monitored continuously</Typography>
@@ -2514,7 +2804,7 @@ const ExamPage = () => {
                     ? rebookingClosed
                       ? `Your slot of ${formatExamSlot(booking.scheduledExamTime)} has passed — it closed at
                          ${formatExamClock(booking.examWindowEnd)} — and this exam stopped taking bookings on
-                         ${formatExamSlot(booking.bookingClosesAt)}. Contact support to have the window reopened;
+                         ${formatExamSlot(booking.bookingClosesAt)}. Contact support at ${SUPPORT_EMAIL} to have the window reopened;
                          your payment still stands.`
                       : `Your slot of ${formatExamSlot(booking.scheduledExamTime)} has passed — it closed at
                          ${formatExamClock(booking.examWindowEnd)}. Rebook to sit the exam; your payment still stands.`
@@ -2573,7 +2863,7 @@ const ExamPage = () => {
                    * brought forward to before the setup so the candidate is not
                    * asked for their camera to be told their slot is tomorrow.
                    */
-                  disabled={devToolsOpen || isLoading || !aiWorkerReady || !setupGatePassed || bookingBlocked}
+                  disabled={devToolsOpen || isLoading || !aiWorkerReady || !setupGatePassed || bookingBlocked || !proctoringPolicyLoaded}
                 >
                   {isLoading && 'Loading...'}
                   {/*
@@ -3194,7 +3484,7 @@ const ExamPage = () => {
                   border: `1px solid ${violationCount > 0 ? 'rgba(224,101,101,.34)' : tokens.line}`,
                 }}
               >
-                Violations: {violationCount}/3
+                Violations: {violationCount}/{strikeLimit}
               </Box>
             </Box>
 
@@ -3212,6 +3502,8 @@ const ExamPage = () => {
                   >
                     <Webcam
                       ref={webcamRef}
+                      // Remounted by Reconnect, which is how a dead camera is re-acquired.
+                      key={`proctor-camera-${cameraGeneration}`}
                       audio={false}
                       /*
                        * 640x480, and no longer tied to the evidence size: gaze
@@ -3229,6 +3521,22 @@ const ExamPage = () => {
                       style={{ width: '100%', display: 'block', transform: 'scaleX(-1)' }}
                     />
                   </Box>
+
+                  {cameraOff && (
+                    <Alert
+                      severity="error"
+                      sx={{ mb: 1.1 }}
+                      action={(
+                        <Button color="inherit" size="small" onClick={handleReconnectCamera}>
+                          Reconnect
+                        </Button>
+                      )}
+                    >
+                      {isMonitored(proctoringPolicy, 'WEBCAM_OFF')
+                        ? 'Camera is off. It is recorded as a violation every 30 seconds until it is back on.'
+                        : 'Camera is off. Turn it back on and reconnect.'}
+                    </Alert>
+                  )}
 
                   <Box
                     sx={{
@@ -3459,12 +3767,12 @@ const ExamPage = () => {
               </Box>
 
               {violationCount > 0 && (
-                <Alert severity={violationCount >= 3 ? 'error' : 'warning'} sx={{ mb: 1.1 }}>
+                <Alert severity={violationCount >= strikeLimit ? 'error' : 'warning'} sx={{ mb: 1.1 }}>
                   <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                     <Typography variant="body2">
-                      Violations: {violationCount}/3{' '}
-                      {violationCount === 1 && '(1 more warning)'}
-                      {violationCount === 2 && '(Final warning)'}
+                      Violations: {violationCount}/{strikeLimit}{' '}
+                      {strikesLeft > 1 && `(${strikesLeft - 1} more warning${strikesLeft === 2 ? '' : 's'})`}
+                      {strikesLeft === 1 && '(Final warning)'}
                     </Typography>
                   </Box>
                 </Alert>
@@ -3524,7 +3832,7 @@ const ExamPage = () => {
                   <Typography variant="caption" sx={{ display: 'block', color: tokens.muted, mb: 0.5 }}><strong>Type:</strong> {lastViolation.type}</Typography>
                   <Typography variant="caption" sx={{ display: 'block', color: tokens.muted, mb: 0.5 }}><strong>Time:</strong> {new Date(lastViolation.timestamp).toLocaleTimeString()}</Typography>
                   <Typography variant="caption" sx={{ display: 'block', color: tokens.muted, mb: 0.5 }}><strong>Severity:</strong> {lastViolation.severity || 'MEDIUM'}</Typography>
-                  <Typography variant="caption" sx={{ display: 'block', color: tokens.muted }}><strong>Violations:</strong> {violationCount}/3</Typography>
+                  <Typography variant="caption" sx={{ display: 'block', color: tokens.muted }}><strong>Violations:</strong> {violationCount}/{strikeLimit}</Typography>
                 </Box>
                 <Box sx={{ bgcolor: 'rgba(150,195,172,.06)', p: 1.5, borderRadius: 1, mb: 2, border: `1px solid ${tokens.line}` }}>
                   <Typography variant="caption" sx={{ display: 'block', mb: 0.5, fontWeight: 600 }}>✓ What you should do:</Typography>
@@ -3532,14 +3840,14 @@ const ExamPage = () => {
                     {violationInfo.action}
                   </Typography>
                 </Box>
-                {violationCount === 1 && (
+                {violationCount > 0 && strikesLeft > 1 && (
                   <Alert severity="warning" sx={{ mb: 1 }}>
-                    <strong>First Warning:</strong> You have 2 more violation(s) before your exam is automatically submitted.
+                    <strong>Warning:</strong> You have {strikesLeft} more violation(s) before your exam is automatically submitted.
                   </Alert>
                 )}
-                {violationCount === 2 && (
+                {violationCount > 0 && strikesLeft === 1 && (
                   <Alert severity="error" sx={{ mb: 1 }}>
-                    <strong>⚠ FINAL WARNING:</strong> This is your second violation. One more violation will immediately auto-submit your exam. Please be more careful.
+                    <strong>⚠ FINAL WARNING:</strong> One more violation will immediately auto-submit your exam. Please be more careful.
                   </Alert>
                 )}
               </Box>
@@ -3572,7 +3880,7 @@ const ExamPage = () => {
               <WarningIcon sx={{ fontSize: 18 }} />
             </Box>
             <Typography sx={{ fontSize: 18, fontWeight: 800, letterSpacing: '-.3px' }}>
-              Exam Terminated After 3 Violations
+              Exam Terminated After {strikeLimit} Violations
             </Typography>
           </Box>
         </DialogTitle>
@@ -3623,7 +3931,9 @@ const ExamPage = () => {
             3. This attempt was closed and marked for restart.
           </Typography>
           <Typography sx={{ fontSize: 12.5, fontWeight: 700 }}>
-            To continue, re-apply for the examination and complete payment again from the beginning.
+            {attemptAllowanceRef.current.attemptNumber < attemptAllowanceRef.current.attemptsAllowed
+              ? 'Your payment covers another attempt. Start it from question 1 on the Exam Applications screen — there is nothing to pay again, and it will have different questions.'
+              : 'To continue, re-apply for the examination and complete payment again from the beginning.'}
           </Typography>
         </DialogContent>
         <DialogActions sx={{ p: 2 }}>

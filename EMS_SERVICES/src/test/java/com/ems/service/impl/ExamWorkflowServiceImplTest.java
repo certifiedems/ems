@@ -52,7 +52,9 @@ import com.ems.repository.QuestionRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.AuditService;
 import com.ems.service.CertificationJourneyService;
+import com.ems.service.ExamAttemptPolicyService;
 import com.ems.service.PaymentService;
+import com.ems.service.ProctoringPolicyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -87,6 +89,12 @@ class ExamWorkflowServiceImplTest {
 	@Mock
 	private AuditService auditService;
 
+	@Mock
+	private ProctoringPolicyService proctoringPolicyService;
+
+	@Mock
+	private ExamAttemptPolicyService examAttemptPolicyService;
+
 	private ExamWorkflowServiceImpl examWorkflowService;
 
 	@BeforeEach
@@ -101,7 +109,9 @@ class ExamWorkflowServiceImplTest {
 				examSessionRepository,
 				paymentService,
 				new ObjectMapper(),
-				auditService);
+				auditService,
+				proctoringPolicyService,
+				examAttemptPolicyService);
 	}
 
 	@Test
@@ -743,6 +753,183 @@ class ExamWorkflowServiceImplTest {
 
 		assertThat(ex.getMessage()).contains("stopped taking bookings");
 		verifyNoInteractions(paymentService);
+	}
+
+	/**
+	 * The point of an attempt allowance: a candidate whose payment still covers
+	 * another sitting gets it without paying. The retake is its own application,
+	 * already paid, pointing back at the one the fee was paid against.
+	 */
+	@Test
+	void reApply_whenThePaymentCoversAnotherAttempt_startsAFreeRetakeOnIt() {
+		User user = User.builder().id(10L).userId("U-10").email(EMAIL).build();
+		CertificationApplication failed = CertificationApplication.builder()
+				.id(31L)
+				.user(user)
+				.exam(openExam())
+				.certificationLevel(CertificationLevel.L1)
+				.applicationStatus(CertificationApplicationStatus.FAILED)
+				.paymentStatus(PaymentStatus.SUCCESS)
+				.attemptNumber(1)
+				.attemptsAllowed(3)
+				.build();
+		stubReApplyable(user, failed);
+		when(certificationApplicationRepository.findTopByPaidApplicationOrderByAttemptNumberDesc(failed))
+				.thenReturn(Optional.empty());
+		List<CertificationApplication> saved = new ArrayList<>();
+		when(certificationApplicationRepository.saveAndFlush(any(CertificationApplication.class)))
+				.thenAnswer(call -> {
+					CertificationApplication retake = call.getArgument(0);
+					retake.setId(32L);
+					saved.add(retake);
+					return retake;
+				});
+
+		ExamWorkflowApplicationResponse response = examWorkflowService.reApply(EMAIL, 31L);
+
+		assertThat(response.applicationId()).isEqualTo(32L);
+		assertThat(response.paymentStatus()).isEqualTo(PaymentStatus.SUCCESS);
+		assertThat(response.applicationStatus()).isEqualTo(CertificationApplicationStatus.IN_PROGRESS);
+		assertThat(response.attemptNumber()).isEqualTo(2);
+		assertThat(response.attemptsAllowed()).isEqualTo(3);
+		assertThat(response.attemptsRemaining()).isEqualTo(1);
+		assertThat(saved).singleElement()
+				.satisfies(retake -> assertThat(retake.getPaidApplication()).isSameAs(failed));
+		verifyNoInteractions(paymentService);
+	}
+
+	/** Once the payment's attempts are spent, the way back is a new application and a new fee. */
+	@Test
+	void reApply_whenThePaymentsAttemptsAreUsedUp_opensANewApplicationToPayFor() {
+		User user = User.builder().id(10L).userId("U-10").email(EMAIL).build();
+		CertificationApplication lastAttempt = CertificationApplication.builder()
+				.id(33L)
+				.user(user)
+				.exam(openExam())
+				.certificationLevel(CertificationLevel.L1)
+				.applicationStatus(CertificationApplicationStatus.TERMINATED)
+				.paymentStatus(PaymentStatus.SUCCESS)
+				.attemptNumber(3)
+				.attemptsAllowed(3)
+				.paidApplication(CertificationApplication.builder().id(30L).build())
+				.build();
+		stubReApplyable(user, lastAttempt);
+		when(certificationApplicationRepository.save(any(CertificationApplication.class)))
+				.thenAnswer(call -> {
+					CertificationApplication created = call.getArgument(0);
+					created.setId(40L);
+					return created;
+				});
+
+		ExamWorkflowApplicationResponse response = examWorkflowService.reApply(EMAIL, 33L);
+
+		assertThat(response.paymentStatus()).isEqualTo(PaymentStatus.PENDING);
+		assertThat(response.applicationStatus()).isEqualTo(CertificationApplicationStatus.APPLIED);
+		assertThat(response.attemptNumber()).isEqualTo(1);
+		assertThat(response.retakeAvailable()).isFalse();
+		verify(certificationApplicationRepository, never()).saveAndFlush(any());
+	}
+
+	/** A spent attempt whose payment covers another points at the free retake, never at paying again. */
+	@Test
+	void startExam_whenAFailedAttemptHasARetakeLeft_pointsToItInsteadOfPayment() {
+		CertificationApplication application = startableApplication();
+		application.setApplicationStatus(CertificationApplicationStatus.FAILED);
+		application.setAttemptsAllowed(2);
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.startExam(
+						EMAIL, 30L, new ExamStartRequest(null, Boolean.TRUE, Instant.now())));
+
+		assertThat(ex.getMessage()).contains("Start your next attempt").doesNotContain("complete payment");
+		verifyNoInteractions(questionRepository, examSessionRepository);
+	}
+
+	/**
+	 * Each attempt is asked questions the candidate has not been asked before.
+	 * The pool holds twelve LOW questions and the paper takes six, so the six
+	 * already seen are not needed at all.
+	 */
+	@Test
+	void startExam_drawsOnlyQuestionsTheCandidateHasNotSeenWhileThereAreEnough() {
+		CertificationApplication application = lowOnlyApplication(6);
+		stubStartableFreshAttempt(application);
+		stubQuestionPool(QuestionSeverity.LOW);
+		when(examSessionRepository.findPapersSeenAtLevel(application.getUser(), CertificationLevel.L1))
+				.thenReturn(List.<Object[]>of(
+						new Object[] { "[0,1,2,3,4,5]", Instant.now().minus(3, ChronoUnit.DAYS) }));
+
+		ExamStartResponse response = examWorkflowService.startExam(
+				EMAIL, 30L, new ExamStartRequest(null, Boolean.TRUE, Instant.now()));
+
+		assertThat(response.questionIds()).containsExactlyInAnyOrder(6L, 7L, 8L, 9L, 10L, 11L);
+	}
+
+	/**
+	 * When fresh questions run out the paper is still built, from the questions
+	 * seen longest ago: an older paper's questions go back in before a more
+	 * recent one's.
+	 */
+	@Test
+	void startExam_whenFreshQuestionsRunOut_reusesTheOnesSeenLongestAgo() {
+		CertificationApplication application = lowOnlyApplication(10);
+		stubStartableFreshAttempt(application);
+		stubQuestionPool(QuestionSeverity.LOW);
+		when(examSessionRepository.findPapersSeenAtLevel(application.getUser(), CertificationLevel.L1))
+				.thenReturn(List.of(
+						new Object[] { "[0,1,2,3,4,5]", Instant.now().minus(10, ChronoUnit.DAYS) },
+						new Object[] { "[6,7,8,9]", Instant.now().minus(1, ChronoUnit.DAYS) }));
+
+		ExamStartResponse response = examWorkflowService.startExam(
+				EMAIL, 30L, new ExamStartRequest(null, Boolean.TRUE, Instant.now()));
+
+		assertThat(response.questionIds()).hasSize(10).contains(10L, 11L, 0L, 1L, 2L, 3L, 4L, 5L);
+		assertThat(response.questionIds()).filteredOn(id -> id >= 6L && id <= 9L).hasSize(2);
+	}
+
+	private Exam openExam() {
+		return Exam.builder()
+				.id(20L)
+				.examCode("EX-L1")
+				.certificationLevel(CertificationLevel.L1)
+				.published(true)
+				.examStatus(ExamStatus.SCHEDULED)
+				.build();
+	}
+
+	private void stubReApplyable(User user, CertificationApplication application) {
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(user));
+		when(certificationApplicationRepository.findByIdAndUserWithExam(application.getId(), user))
+				.thenReturn(Optional.of(application));
+		when(certificationJourneyService.getEligibility(EMAIL, CertificationLevel.L1))
+				.thenReturn(new CertificationEligibilityResponse(CertificationLevel.L1, true, "ok", null, null));
+		when(certificationApplicationRepository
+				.existsByUserAndCertificationLevelAndApplicationStatusIn(any(), any(), any()))
+				.thenReturn(false);
+	}
+
+	/** A paid, booked application whose exam draws only LOW questions. */
+	private CertificationApplication lowOnlyApplication(int totalQuestions) {
+		CertificationApplication application = startableApplication();
+		application.getExam().setTotalQuestions(totalQuestions);
+		application.getExam().setLowSeverityPercentage(new BigDecimal("100.00"));
+		application.getExam().setMediumSeverityPercentage(BigDecimal.ZERO);
+		application.getExam().setHighSeverityPercentage(BigDecimal.ZERO);
+		return application;
+	}
+
+	private void stubStartableFreshAttempt(CertificationApplication application) {
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+		when(examSessionRepository.save(any(ExamSession.class))).thenAnswer(call -> call.getArgument(0));
 	}
 
 	/** Enough questions at every severity for one full paper. */

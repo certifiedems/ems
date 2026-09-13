@@ -3,6 +3,9 @@ import apiClient from './apiClient'
 export const examAPI = {
 	getWorkflowOptions: (level) => apiClient.get(`/exam-workflow/options/${level}`),
 
+	// How many attempts a payment made now covers at a level, shown before paying.
+	getAttemptAllowance: (level) => apiClient.get(`/exam-workflow/attempt-allowance/${level}`),
+
 	applyForExam: (data) => apiClient.post('/exam-workflow/applications', data),
 
 	initiatePayment: (applicationId, data) =>

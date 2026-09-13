@@ -4,10 +4,9 @@ public enum ProctoringAction {
     LOGGED,
     WARNING,
     /**
-     * Recorded with evidence for an invigilator to adjudicate, without counting
-     * toward the strike limit. Used for detections whose confidence does not
-     * justify ending an attempt automatically — see
-     * {@link ViolationType#countsAsStrike()}.
+     * Recorded with its evidence, without counting toward the strike limit: the
+     * outcome for a type the policy enforces as
+     * {@link ViolationEnforcement#RECORD_ONLY}.
      */
     FLAGGED_FOR_REVIEW,
     EXAM_TERMINATED

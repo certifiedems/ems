@@ -38,6 +38,7 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.PaymentRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.AuditService;
+import com.ems.service.ExamAttemptPolicyService;
 import com.ems.service.PaymentReceiptPdfGeneratorService;
 import com.ems.service.payment.PaymentInstrument;
 import com.ems.service.payment.PaymentProviderResult;
@@ -75,6 +76,9 @@ class PaymentServiceImplTest {
     @Mock
     private PaymentProviderStrategy razorpay;
 
+    @Mock
+    private ExamAttemptPolicyService examAttemptPolicyService;
+
     private PaymentServiceImpl service;
     private User user;
     private CertificationApplication application;
@@ -109,7 +113,7 @@ class PaymentServiceImplTest {
                 .build();
 
         service = new PaymentServiceImpl(paymentRepository, certificationApplicationRepository, userRepository,
-                receiptPdfGeneratorService, List.of(razorpay), auditService);
+                receiptPdfGeneratorService, List.of(razorpay), auditService, examAttemptPolicyService);
     }
 
     @Test
@@ -269,6 +273,48 @@ class PaymentServiceImplTest {
         assertThat(stale.getPaymentStatus()).isEqualTo(PaymentStatus.FAILED);
         assertThat(application.getPaymentStatus()).isEqualTo(PaymentStatus.SUCCESS);
         assertThat(application.getApplicationStatus()).isEqualTo(CertificationApplicationStatus.IN_PROGRESS);
+    }
+
+    @Test
+    @DisplayName("a captured payment fixes how many attempts it buys from the level's policy at that moment")
+    void captureFixesAttemptAllowance() {
+        when(examAttemptPolicyService.attemptsPerPayment(CertificationLevel.L1)).thenReturn(3);
+        Payment payment = gatewayPayment(PaymentStatus.PENDING);
+        when(paymentRepository.findByProviderOrderId(ORDER_ID)).thenReturn(Optional.of(payment));
+
+        service.settleFromGatewayCallback(ORDER_ID, PAYMENT_ID, PaymentStatus.SUCCESS,
+                new BigDecimal("999.00"), "INR", null);
+
+        assertThat(application.getApplicationStatus()).isEqualTo(CertificationApplicationStatus.IN_PROGRESS);
+        assertThat(application.getAttemptsAllowed()).isEqualTo(3);
+    }
+
+    @Test
+    @DisplayName("refunding a payment takes the retakes it covered with it")
+    void refundCancelsCoveredRetakes() {
+        Payment payment = gatewayPayment(PaymentStatus.SUCCESS);
+        application.setPaymentStatus(PaymentStatus.SUCCESS);
+        CertificationApplication retake = CertificationApplication.builder()
+                .id(101L)
+                .user(user)
+                .exam(application.getExam())
+                .certificationLevel(CertificationLevel.L1)
+                .applicationStatus(CertificationApplicationStatus.IN_PROGRESS)
+                .paymentStatus(PaymentStatus.SUCCESS)
+                .attemptNumber(2)
+                .attemptsAllowed(3)
+                .paidApplication(application)
+                .build();
+        when(paymentRepository.findByTransactionId(TRANSACTION_ID)).thenReturn(Optional.of(payment));
+        when(razorpay.refund(any(), any())).thenReturn(
+                new PaymentProviderResult(PaymentStatus.REFUNDED, "rfnd_001", null, null));
+        when(certificationApplicationRepository.findByPaidApplicationOrderByAttemptNumberAsc(application))
+                .thenReturn(List.of(retake));
+
+        service.refundPayment(TRANSACTION_ID, new PaymentRefundRequest("candidate withdrew"));
+
+        assertThat(application.getPaymentStatus()).isEqualTo(PaymentStatus.REFUNDED);
+        assertThat(retake.getPaymentStatus()).isEqualTo(PaymentStatus.REFUNDED);
     }
 
     private Payment gatewayPayment(PaymentStatus status) {

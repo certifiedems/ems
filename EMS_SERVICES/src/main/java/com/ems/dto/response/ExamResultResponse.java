@@ -18,5 +18,11 @@ public record ExamResultResponse(
         BigDecimal obtainedMarks,
         BigDecimal percentage,
         ResultStatus resultStatus,
-        Instant submittedAt) {
+        Instant submittedAt,
+        int attemptNumber,
+        int attemptsAllowed,
+        int attemptsRemaining,
+
+        /** Whether the candidate's next attempt is already paid for. */
+        boolean retakeAvailable) {
 }

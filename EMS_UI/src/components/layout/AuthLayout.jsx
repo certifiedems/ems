@@ -3,6 +3,7 @@ import PropTypes from 'prop-types'
 import { Box, Typography } from '@mui/material'
 import PcbBackdrop from '../brand/PcbBackdrop'
 import BrandMark from '../brand/BrandMark'
+import SupportEmailLink from '../common/SupportEmailLink'
 import { tokens, fonts, gradients, shadows } from '../../styles/tokens'
 
 const LEVELS = [
@@ -331,7 +332,7 @@ const AuthLayout = ({ title, subtitle, children, stamp = 'EMS-AUTH v2.4', wide =
             display: { xs: 'none', md: 'block' },
           }}
         >
-          © {new Date().getFullYear()} CERTIFIED EMS ENGINEER · EMS CERTIFICATION BOARD
+          © {new Date().getFullYear()} CERTIFIED EMS ENGINEERS · EMS CERTIFICATION BOARD
         </Typography>
       </Box>
 
@@ -341,6 +342,9 @@ const AuthLayout = ({ title, subtitle, children, stamp = 'EMS-AUTH v2.4', wide =
         sx={{
           display: 'grid',
           placeItems: 'center',
+          // Packs the card and the help line under it into one centred group;
+          // at the default each would be centred in its own half of the column.
+          alignContent: 'center',
           minWidth: 0,
           // Heavier bottom padding than top: a centred card reads as sitting low,
           // so the extra weight below lifts it to the optical centre. The two
@@ -408,6 +412,12 @@ const AuthLayout = ({ title, subtitle, children, stamp = 'EMS-AUTH v2.4', wide =
             {children}
           </Box>
         </Box>
+
+        {/* Outside the package so every auth screen carries it — including the
+            ones a candidate lands on precisely because signing in went wrong. */}
+        <Typography sx={{ mt: 2.5, textAlign: 'center', fontSize: 13, color: tokens.body }}>
+          Need help? Email us at <SupportEmailLink />
+        </Typography>
       </Box>
     </Box>
   </>

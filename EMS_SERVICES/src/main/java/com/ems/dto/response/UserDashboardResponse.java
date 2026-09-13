@@ -88,7 +88,22 @@ public record UserDashboardResponse(
              * has to tell them apart: one needs the scheduling step, the other
              * needs to be put back into the exam they are already sitting.</p>
              */
-            boolean attemptInProgress) {
+            boolean attemptInProgress,
+
+            /** Which sitting on its payment this application is; 1 for the paid attempt. */
+            int attemptNumber,
+
+            /** Sittings the payment covers; 1 until the application is paid. */
+            int attemptsAllowed,
+
+            /** Sittings the payment still covers after this one. */
+            int attemptsRemaining,
+
+            /**
+             * Whether re-applying from this row starts a sitting that is already
+             * paid for, rather than a new application that has to be paid again.
+             */
+            boolean retakeAvailable) {
     }
 
     /**

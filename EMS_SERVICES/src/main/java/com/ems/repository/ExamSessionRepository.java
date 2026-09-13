@@ -64,4 +64,20 @@ public interface ExamSessionRepository extends JpaRepository<ExamSession, Long> 
      */
     Optional<ExamSession> findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(
             CertificationApplication certificationApplication);
+
+    /**
+     * Every paper this candidate has been given at a level, as
+     * {@code [selectedQuestionIdsJson, sessionStartTime]} rows.
+     *
+     * <p>Read when a new attempt's paper is drawn, so the questions a candidate
+     * has already seen are the last ones chosen for them. Only the two columns
+     * are selected: a session row also carries the answer draft and the
+     * proctoring snapshot, and neither is needed to know what was asked.</p>
+     */
+    @Query("SELECT s.selectedQuestionIdsJson, s.sessionStartTime FROM ExamSession s "
+            + "WHERE s.user = :user AND s.exam.certificationLevel = :level "
+            + "AND s.selectedQuestionIdsJson IS NOT NULL")
+    List<Object[]> findPapersSeenAtLevel(
+            @Param("user") User user,
+            @Param("level") com.ems.enums.CertificationLevel level);
 }

@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -35,6 +36,7 @@ import com.ems.enums.CertificationLevel;
 import com.ems.enums.EvidenceStorageKind;
 import com.ems.enums.ExamStatus;
 import com.ems.enums.ProctoringAction;
+import com.ems.enums.ViolationEnforcement;
 import com.ems.enums.ViolationType;
 import com.ems.exception.BusinessException;
 import com.ems.exception.ResourceNotFoundException;
@@ -42,7 +44,9 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.ProctorEvidenceRepository;
 import com.ems.repository.ViolationRepository;
+import com.ems.service.EffectiveProctoringPolicy;
 import com.ems.service.ProctorEvidenceStorageService;
+import com.ems.service.ProctoringPolicyService;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -67,6 +71,9 @@ class ViolationStrikeRecorderTest {
 	@Mock
 	private ProctorEvidenceStorageService proctorEvidenceStorageService;
 
+	@Mock
+	private ProctoringPolicyService proctoringPolicyService;
+
 	private ViolationStrikeRecorder recorder;
 
 	private User user;
@@ -82,7 +89,11 @@ class ViolationStrikeRecorderTest {
 				violationRepository,
 				proctorEvidenceRepository,
 				proctorEvidenceStorageService,
-				new ExamInvalidationHandler(certificationApplicationRepository));
+				new ExamInvalidationHandler(certificationApplicationRepository),
+				proctoringPolicyService);
+
+		// No policy saved: the built-in rules, which every test below predates.
+		when(proctoringPolicyService.resolveForSession(any(ExamSession.class))).thenReturn(EffectiveProctoringPolicy.builtIn());
 
 		when(violationRepository.save(any(Violation.class))).thenAnswer(invocation -> {
 			Violation violation = invocation.getArgument(0);
@@ -156,7 +167,7 @@ class ViolationStrikeRecorderTest {
 	 */
 	@Test
 	void record_reviewOnlyDetectionCannotTerminateEvenAtTheStrikeLimit() {
-		ExamSession session = session(ViolationStrikeRecorder.STRIKE_LIMIT - 1, ExamStatus.IN_PROGRESS);
+		ExamSession session = session(EffectiveProctoringPolicy.DEFAULT_STRIKE_LIMIT - 1, ExamStatus.IN_PROGRESS);
 
 		ViolationLogResponse response = recorder.record(
 				CALLER_EMAIL, request(ViolationType.PROCTOR_SETUP_INVALID, null));
@@ -204,7 +215,7 @@ class ViolationStrikeRecorderTest {
 	@Test
 	void record_forgivenSoundSaysTheNextOneWillCount() {
 		session(0, ExamStatus.IN_PROGRESS);
-		soundsAlreadyHeard(ViolationStrikeRecorder.UNIDENTIFIED_SOUND_GRACE - 1);
+		soundsAlreadyHeard(EffectiveProctoringPolicy.DEFAULT_UNIDENTIFIED_SOUND_GRACE - 1);
 
 		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.SOUND_DETECTED, null));
 
@@ -215,7 +226,7 @@ class ViolationStrikeRecorderTest {
 	@Test
 	void record_unidentifiedSoundCountsAsAStrikeOnceTheGraceIsSpent() {
 		ExamSession session = session(1, ExamStatus.IN_PROGRESS);
-		soundsAlreadyHeard(ViolationStrikeRecorder.UNIDENTIFIED_SOUND_GRACE);
+		soundsAlreadyHeard(EffectiveProctoringPolicy.DEFAULT_UNIDENTIFIED_SOUND_GRACE);
 
 		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.SOUND_DETECTED, null));
 
@@ -232,8 +243,8 @@ class ViolationStrikeRecorderTest {
 	 */
 	@Test
 	void record_unidentifiedSoundTerminatesAtTheStrikeLimit() {
-		ExamSession session = session(ViolationStrikeRecorder.STRIKE_LIMIT - 1, ExamStatus.IN_PROGRESS);
-		soundsAlreadyHeard(ViolationStrikeRecorder.UNIDENTIFIED_SOUND_GRACE);
+		ExamSession session = session(EffectiveProctoringPolicy.DEFAULT_STRIKE_LIMIT - 1, ExamStatus.IN_PROGRESS);
+		soundsAlreadyHeard(EffectiveProctoringPolicy.DEFAULT_UNIDENTIFIED_SOUND_GRACE);
 		CertificationApplication application = liveApplication();
 
 		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.SOUND_DETECTED, null));
@@ -448,5 +459,125 @@ class ViolationStrikeRecorderTest {
 		// A bucket outage must not cost the candidate their strike record.
 		assertThat(response.strikeCount()).isEqualTo(1);
 		assertThat(response.evidenceStored()).isTrue();
+	}
+
+	/** An exam policy: the given limit and grace, default thresholds, and these rules over the defaults. */
+	private void policy(int strikeLimit, int soundGrace, Map<ViolationType, ViolationEnforcement> rules) {
+		when(proctoringPolicyService.resolveForSession(any(ExamSession.class))).thenReturn(
+				new EffectiveProctoringPolicy(strikeLimit, soundGrace, 0, 0, 15, rules));
+	}
+
+	/**
+	 * Only a client still on rules loaded before the admin's change sends one of
+	 * these, and the candidate was told the check is off — so nothing is written.
+	 */
+	@Test
+	void record_typeSwitchedOffForTheExamIsDroppedWithoutARecord() {
+		ExamSession session = session(1, ExamStatus.IN_PROGRESS);
+		policy(3, 2, Map.of(ViolationType.TAB_SWITCH, ViolationEnforcement.DISABLED));
+
+		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.TAB_SWITCH, null));
+
+		assertThat(response.violationId()).isNull();
+		assertThat(response.strikeCount()).isEqualTo(1);
+		assertThat(response.isTerminated()).isFalse();
+		assertThat(session.getViolationCount()).isEqualTo(1);
+		verify(violationRepository, never()).save(any(Violation.class));
+		verify(proctorEvidenceRepository, never()).save(any(ProctorEvidence.class));
+	}
+
+	@Test
+	void record_raisedStrikeLimitKeepsTheAttemptRunningPastThree() {
+		ExamSession session = session(2, ExamStatus.IN_PROGRESS);
+		policy(5, 2, Map.of());
+
+		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.PHONE_DETECTED, null));
+
+		assertThat(response.strikeCount()).isEqualTo(3);
+		assertThat(response.strikeLimit()).isEqualTo(5);
+		assertThat(response.strikesRemaining()).isEqualTo(2);
+		assertThat(response.isTerminated()).isFalse();
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.WARNING);
+		assertThat(session.getSessionStatus()).isEqualTo(ExamStatus.IN_PROGRESS);
+	}
+
+	@Test
+	void record_loweredStrikeLimitTerminatesOnTheFirstStrike() {
+		ExamSession session = session(0, ExamStatus.IN_PROGRESS);
+		CertificationApplication application = liveApplication();
+		policy(1, 2, Map.of());
+
+		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.MULTIPLE_FACES, null));
+
+		assertThat(response.isTerminated()).isTrue();
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.EXAM_TERMINATED);
+		assertThat(session.getSessionStatus()).isEqualTo(ExamStatus.INVALIDATED);
+		verify(certificationApplicationRepository).save(application);
+	}
+
+	@Test
+	void record_strikeTypeSetToRecordOnlyCannotTerminate() {
+		ExamSession session = session(2, ExamStatus.IN_PROGRESS);
+		policy(3, 2, Map.of(ViolationType.PHONE_DETECTED, ViolationEnforcement.RECORD_ONLY));
+
+		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.PHONE_DETECTED, null));
+
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.FLAGGED_FOR_REVIEW);
+		assertThat(response.isTerminated()).isFalse();
+		assertThat(session.getViolationCount()).isEqualTo(2);
+		verify(violationRepository).save(any(Violation.class));
+	}
+
+	@Test
+	void record_recordOnlyTypeSetToStrikeCounts() {
+		ExamSession session = session(0, ExamStatus.IN_PROGRESS);
+		policy(3, 2, Map.of(ViolationType.EYES_OFF_SCREEN, ViolationEnforcement.STRIKE));
+
+		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.EYES_OFF_SCREEN, null));
+
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.WARNING);
+		assertThat(session.getViolationCount()).isEqualTo(1);
+	}
+
+	@Test
+	void record_zeroSoundGraceCountsTheFirstUnidentifiedSound() {
+		ExamSession session = session(0, ExamStatus.IN_PROGRESS);
+		policy(3, 0, Map.of());
+
+		ViolationLogResponse response = recorder.record(CALLER_EMAIL, request(ViolationType.SOUND_DETECTED, null));
+
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.WARNING);
+		assertThat(session.getViolationCount()).isEqualTo(1);
+		verify(violationRepository, never())
+				.countByExamSessionAndViolationType(any(ExamSession.class), any(ViolationType.class));
+	}
+
+	@Test
+	void recordDetectedByServer_countsAgainstTheLockedSessionWithoutAnyClientIds() {
+		ExamSession session = session(1, ExamStatus.IN_PROGRESS);
+
+		ViolationLogResponse response = recorder.recordDetectedByServer(
+				300L, ViolationType.MULTIPLE_LOGIN, "open in two places");
+
+		assertThat(response.actionTaken()).isEqualTo(ProctoringAction.WARNING);
+		assertThat(response.strikeCount()).isEqualTo(2);
+		assertThat(session.getViolationCount()).isEqualTo(2);
+		verify(examSessionRepository).findByIdForUpdate(300L);
+		// Nothing candidate-supplied is looked up: the session is addressed by id alone.
+		verify(examSessionRepository, never())
+				.findTopByUserEmailIgnoreCaseAndExamIdAndSessionStatusOrderByIdDesc(any(), any(), any());
+	}
+
+	@Test
+	void recordDetectedByServer_honoursATypeSwitchedOffForTheExam() {
+		ExamSession session = session(0, ExamStatus.IN_PROGRESS);
+		policy(3, 2, Map.of(ViolationType.MULTIPLE_LOGIN, ViolationEnforcement.DISABLED));
+
+		ViolationLogResponse response = recorder.recordDetectedByServer(
+				300L, ViolationType.MULTIPLE_LOGIN, "open in two places");
+
+		assertThat(response.violationId()).isNull();
+		assertThat(session.getViolationCount()).isZero();
+		verify(violationRepository, never()).save(any(Violation.class));
 	}
 }

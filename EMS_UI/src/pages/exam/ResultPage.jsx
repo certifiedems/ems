@@ -71,8 +71,12 @@ const ResultPage = () => {
     setReApplyError('')
     try {
       const res = await examAPI.reApply(result.applicationId)
-      const newApplicationId = res.data.data?.applicationId
-      navigate(`/exam/payment/${newApplicationId}`)
+      const created = res.data.data
+      // A retake the payment still covers is already paid for, so it goes
+      // straight to booking a slot; anything else starts at the payment step.
+      navigate(created?.paymentStatus === 'SUCCESS'
+        ? `/exam/schedule/${created.applicationId}`
+        : `/exam/payment/${created?.applicationId}`)
     } catch (err) {
       setReApplyError(err.response?.data?.message || 'Failed to re-apply. Please try again.')
       setReApplying(false)
@@ -200,7 +204,9 @@ const ResultPage = () => {
               <Stack spacing={1.5}>
                 {reApplyError && <Alert severity="error">{reApplyError}</Alert>}
                 <Typography variant="body2" color="text.secondary">
-                  Don't worry – you can re-apply and take the exam again.
+                  {result.retakeAvailable
+                    ? `Your payment covers ${result.attemptsRemaining} more attempt${result.attemptsRemaining === 1 ? '' : 's'}, so you can take the exam again without paying. Your next attempt will have different questions.`
+                    : "Don't worry – you can re-apply and take the exam again."}
                 </Typography>
                 <Button
                   variant="contained" color="warning"
@@ -208,7 +214,10 @@ const ResultPage = () => {
                   startIcon={reApplying ? <CircularProgress size={18} color="inherit" /> : null}
                   onClick={handleReApply}
                 >
-                  {reApplying ? 'Applying…' : 'Re-apply for exam'}
+                  {reApplying && 'Applying…'}
+                  {!reApplying && (result.retakeAvailable
+                    ? `Start attempt ${result.attemptNumber + 1} of ${result.attemptsAllowed}`
+                    : 'Re-apply for exam')}
                 </Button>
                 <Button variant="outlined" onClick={() => navigate('/exams')}>
                   View all applications

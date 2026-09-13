@@ -1,11 +1,19 @@
 // ems_frontend/src/store/slices/proctoringSlice.js
 import { createSlice } from '@reduxjs/toolkit'
 
+/** The built-in limit, used until the exam's proctoring rules have loaded. */
+const DEFAULT_STRIKE_LIMIT = 3
+
 const initialState = {
   isRecording: false,
   cameraEnabled: false,
   microphoneEnabled: false,
   violationCount: 0,
+  /**
+   * Strikes that end the attempt, from the exam's proctoring rules. Every count
+   * below is clamped to it, so it is set before any count that depends on it.
+   */
+  strikeLimit: DEFAULT_STRIKE_LIMIT,
   violations: [],
   recordingUrl: null,
   isLoading: false,
@@ -56,9 +64,9 @@ const proctoringSlice = createSlice({
         return
       }
       if (Number.isInteger(action.payload.violationLevel)) {
-        state.violationCount = Math.min(Math.max(action.payload.violationLevel, state.violationCount), 3)
+        state.violationCount = Math.min(Math.max(action.payload.violationLevel, state.violationCount), state.strikeLimit)
       } else {
-        state.violationCount = Math.min(state.violationCount + 1, 3)
+        state.violationCount = Math.min(state.violationCount + 1, state.strikeLimit)
       }
     },
     recordBrowserSwitch: (state) => {
@@ -69,7 +77,7 @@ const proctoringSlice = createSlice({
         description: 'Candidate switched browser tabs',
         severity: 'HIGH'
       })
-      state.violationCount = Math.min(state.violationCount + 1, 3)
+      state.violationCount = Math.min(state.violationCount + 1, state.strikeLimit)
     },
     recordWindowBlur: (state) => {
       state.windowBlurs += 1
@@ -79,7 +87,7 @@ const proctoringSlice = createSlice({
         description: 'Candidate minimized or switched window',
         severity: 'HIGH'
       })
-      state.violationCount = Math.min(state.violationCount + 1, 3)
+      state.violationCount = Math.min(state.violationCount + 1, state.strikeLimit)
     },
     recordCameraDisabled: (state) => {
       state.cameraDisabledCount += 1
@@ -89,7 +97,7 @@ const proctoringSlice = createSlice({
         description: 'Camera was disabled during exam',
         severity: 'CRITICAL'
       })
-      state.violationCount = Math.min(state.violationCount + 1, 3)
+      state.violationCount = Math.min(state.violationCount + 1, state.strikeLimit)
     },
     setCameraEnabled: (state, action) => {
       state.cameraEnabled = action.payload
@@ -121,7 +129,19 @@ const proctoringSlice = createSlice({
       if (!Number.isInteger(action.payload)) {
         return
       }
-      state.violationCount = Math.min(Math.max(action.payload, 0), 3)
+      state.violationCount = Math.min(Math.max(action.payload, 0), state.strikeLimit)
+    },
+    /** Adopts the attempt's strike limit, from its proctoring rules or a server reply. */
+    setStrikeLimit: (state, action) => {
+      if (!Number.isInteger(action.payload) || action.payload < 1) {
+        return
+      }
+      state.strikeLimit = action.payload
+      state.violationCount = Math.min(state.violationCount, action.payload)
+    },
+    /** The server's termination verdict: the attempt is over, whatever the local count says. */
+    markStrikeLimitReached: (state) => {
+      state.violationCount = state.strikeLimit
     }
   }
 })
@@ -138,7 +158,9 @@ export const {
   setMicrophoneEnabled,
   clearViolations,
   setProctoringError,
-  syncViolationCount
+  syncViolationCount,
+  setStrikeLimit,
+  markStrikeLimitReached
 } = proctoringSlice.actions
 
 export default proctoringSlice.reducer

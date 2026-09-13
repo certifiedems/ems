@@ -6,6 +6,7 @@ import {
 } from '@mui/material'
 import CloseIcon from '@mui/icons-material/CloseRounded'
 import { tokens, fonts, ctaButton } from '../../styles/tokens'
+import { SUPPORT_EMAIL } from '../../config/support'
 
 /*
  * The terms the checkbox on the payment screen is agreeing to.
@@ -53,7 +54,7 @@ const TERMS = [
   },
   {
     title: 'Chargebacks and disputes',
-    body: 'Raise any dispute with support first, quoting the transaction reference, so that it can be investigated. A chargeback raised with your bank without prior contact may result in the associated application being held until the dispute is resolved.'
+    body: `Raise any dispute with support at ${SUPPORT_EMAIL} first, quoting the transaction reference, so that it can be investigated. A chargeback raised with your bank without prior contact may result in the associated application being held until the dispute is resolved.`
   },
   {
     title: 'Payment security',

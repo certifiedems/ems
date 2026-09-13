@@ -121,7 +121,7 @@ public class PdfBoxCertificatePdfGeneratorService implements CertificatePdfGener
 		PDDocumentInformation info = document.getDocumentInformation();
 		info.setTitle(template.awardTitle() + " - " + data.certificateNumber());
 		info.setSubject(template.eyebrow());
-		info.setAuthor("Certified EMS Engineer Board");
+		info.setAuthor("Certified EMS Engineers Board");
 		info.setCreator("Examination Management System");
 		info.setKeywords(data.certificateNumber() + " " + data.certificationLevel());
 
@@ -193,9 +193,9 @@ public class PdfBoxCertificatePdfGeneratorService implements CertificatePdfGener
 		drawBrandMark(canvas, CONTENT_X, 38f, 32f);
 
 		canvas.text(PDType1Font.HELVETICA_BOLD, 15f, 1.9f, INK, CONTENT_X + 44f, 60f,
-				"CERTIFIED EMS ENGINEER");
+				"CERTIFIED EMS ENGINEERS");
 		canvas.text(PDType1Font.HELVETICA, 6.5f, 1.15f, MUTED, CONTENT_X + 45f, 74f,
-				"WWW.CERTIFIEDEMSENGINEER.COM");
+				"WWW.CERTIFIEDEMSENGINEERS.COM");
 
 		// Dotted flourish between the wordmark and the certificate number.
 		for (int row = 0; row < 2; row++) {

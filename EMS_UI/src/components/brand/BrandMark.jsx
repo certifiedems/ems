@@ -79,7 +79,7 @@ const BrandMark = ({ size = 46, showWordmark = true, compact = false, sx }) => (
             lineHeight: 1.1,
           }}
         >
-          CERTIFIED EMS ENGINEER
+          CERTIFIED EMS ENGINEERS
         </Typography>
         {!compact && (
           <Typography
@@ -93,7 +93,7 @@ const BrandMark = ({ size = 46, showWordmark = true, compact = false, sx }) => (
               mt: '5px',
             }}
           >
-            WWW.CERTIFIEDEMSENGINEER.COM
+            WWW.CERTIFIEDEMSENGINEERS.COM
           </Typography>
         )}
       </Box>
