@@ -65,6 +65,8 @@ const AdminUsersPage = () => {
             <TableCell>User</TableCell>
             <TableCell>User ID</TableCell>
             <TableCell>Skill</TableCell>
+            <TableCell>Created</TableCell>
+            <TableCell>Last Login</TableCell>
             <TableCell>Status</TableCell>
             <TableCell align="right">Actions</TableCell>
           </TableRow>
@@ -89,6 +91,12 @@ const AdminUsersPage = () => {
               </TableCell>
               <TableCell>{u.userId}</TableCell>
               <TableCell>{u.currentSkillLevel || '–'}</TableCell>
+              <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : '–'}
+              </TableCell>
+              <TableCell sx={{ whiteSpace: 'nowrap' }}>
+                {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString() : '–'}
+              </TableCell>
               <TableCell>
                 <Stack direction="row" spacing={0.5}>
                   <Chip

@@ -1,5 +1,7 @@
 package com.ems.dto.response;
 
+import java.time.Instant;
+
 public record AdminUserResponse(
         Long id,
         String userId,
@@ -12,5 +14,7 @@ public record AdminUserResponse(
         String qualification,
         Integer yearsOfExperience,
         boolean enabled,
-        boolean accountNonLocked) {
+        boolean accountNonLocked,
+        Instant createdAt,
+        Instant lastLoginAt) {
 }

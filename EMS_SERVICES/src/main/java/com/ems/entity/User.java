@@ -1,5 +1,6 @@
 package com.ems.entity;
 
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -80,6 +81,9 @@ public class User extends BaseAuditEntity {
     @Builder.Default
     @Column(name = "account_non_locked", nullable = false)
     private boolean accountNonLocked = true;
+
+    @Column(name = "last_login_at")
+    private Instant lastLoginAt;
 
     @Builder.Default
     @ManyToMany(fetch = FetchType.EAGER)

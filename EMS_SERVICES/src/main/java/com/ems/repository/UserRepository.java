@@ -1,11 +1,13 @@
 package com.ems.repository;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -44,4 +46,12 @@ public interface UserRepository extends JpaRepository<User, Long> {
     List<User> search(
             @Param("searchText") String searchText,
             @Param("enabled") Boolean enabled);
+
+    /**
+     * Stamps a successful sign-in. A bulk update rather than a save, so that
+     * logging in is not recorded as an edit to the account in updated_by/updated_date.
+     */
+    @Modifying
+    @Query("update User u set u.lastLoginAt = :lastLoginAt where u.id = :id")
+    int updateLastLoginAt(@Param("id") Long id, @Param("lastLoginAt") Instant lastLoginAt);
 }

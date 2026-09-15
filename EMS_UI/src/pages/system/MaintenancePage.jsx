@@ -2,6 +2,9 @@
 import { useEffect, useState } from 'react'
 import PropTypes from 'prop-types'
 import { Box, Button, Typography, CircularProgress } from '@mui/material'
+import BuildRoundedIcon from '@mui/icons-material/BuildRounded'
+import CloudOffRoundedIcon from '@mui/icons-material/CloudOffRounded'
+import WifiOffRoundedIcon from '@mui/icons-material/WifiOffRounded'
 import PcbBackdrop from '../../components/brand/PcbBackdrop'
 import BrandMark from '../../components/brand/BrandMark'
 import SupportEmailLink from '../../components/common/SupportEmailLink'
@@ -23,40 +26,23 @@ const PRESENTATION = {
     title: 'We will be right back',
     body: 'The platform is closed while we complete scheduled work. Nothing you have submitted is affected.',
     tone: tone.copper,
+    Icon: BuildRoundedIcon,
   },
   [SERVER_STATUS.DOWN]: {
     label: 'Service unavailable',
     title: 'Reconnecting to the server',
     body: 'The service is not responding. This is usually a deployment finishing up — this page clears itself the moment the connection is back.',
     tone: tone.danger,
+    Icon: CloudOffRoundedIcon,
   },
   [SERVER_STATUS.OFFLINE]: {
     label: 'No connection',
     title: 'You appear to be offline',
     body: 'Your device has lost its network connection. Reconnect and this page will continue on its own.',
     tone: tone.info,
+    Icon: WifiOffRoundedIcon,
   },
 }
-
-/** A board trace that resolves into a wrench — maintenance in the PCB idiom. */
-const MaintenanceGlyph = () => (
-  <svg width="44" height="44" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <path
-      d="M14.7 6.3a3.6 3.6 0 0 0 4.6 4.6l-6.9 6.9a2.3 2.3 0 0 1-3.2-3.2z"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinejoin="round"
-    />
-    <path
-      d="M14.7 6.3 17 4a4.6 4.6 0 0 0-5.6 5.6"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    />
-    <path d="M3 12h4M5 8v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-  </svg>
-)
 
 /**
  * Live countdown to the next automatic probe.
@@ -153,7 +139,7 @@ const MaintenancePage = ({ status, detail, isChecking, nextProbeAt, onRetry }) =
             border: `1px solid ${view.tone.border}`,
           }}
         >
-          <MaintenanceGlyph />
+          <view.Icon aria-hidden="true" sx={{ fontSize: 42 }} />
         </Box>
 
         <Box

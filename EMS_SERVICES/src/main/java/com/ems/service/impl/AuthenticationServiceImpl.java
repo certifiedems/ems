@@ -140,6 +140,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 		}
 
 		refreshTokenRepository.revokeAllActiveByUserId(user.getId());
+		userRepository.updateLastLoginAt(user.getId(), Instant.now());
 		log.info("Login success for userId={}, email={}", user.getUserId(), user.getEmail());
 		auditService.record(AuditEvent.builder()
 				.eventType(AuditEventType.LOGIN_SUCCESS)

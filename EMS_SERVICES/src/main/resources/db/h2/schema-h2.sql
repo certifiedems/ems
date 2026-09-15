@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
     father_name          VARCHAR(255),
     enabled              BOOLEAN      NOT NULL,
     account_non_locked   BOOLEAN      NOT NULL,
+    last_login_at        TIMESTAMP,
     created_by           VARCHAR(100) NOT NULL,
     created_date         TIMESTAMP    NOT NULL,
     updated_by           VARCHAR(100),
@@ -460,6 +461,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_certification_applications_paid_attempt
 -- Payments taken before attempts were configurable bought a single sitting.
 UPDATE certification_applications SET attempts_allowed = 1
 WHERE attempts_allowed IS NULL AND payment_status IN ('SUCCESS', 'REFUNDED');
+
+-- When each user last signed in (V36 on Postgres). The login and the admin user
+-- list both name this column.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_payments_provider_order_id ON payments (provider_order_id);

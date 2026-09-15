@@ -390,7 +390,9 @@ public class AdminPortalServiceImpl implements AdminPortalService {
 				user.getQualification(),
 				user.getYearsOfExperience(),
 				user.isEnabled(),
-				user.isAccountNonLocked());
+				user.isAccountNonLocked(),
+				fromAuditClock(user.getCreatedDate()),
+				user.getLastLoginAt());
 	}
 
 	private AdminPaymentResponse toAdminPaymentResponse(Payment payment) {
