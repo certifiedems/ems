@@ -80,4 +80,16 @@ public interface ExamSessionRepository extends JpaRepository<ExamSession, Long> 
     List<Object[]> findPapersSeenAtLevel(
             @Param("user") User user,
             @Param("level") com.ems.enums.CertificationLevel level);
+
+    /**
+     * Every session sat under any of these applications, for the admin exam
+     * tracker's list: one query for the whole page rather than one per row.
+     * Legacy sessions with no application link are not reached.
+     */
+    List<ExamSession> findByCertificationApplicationIn(
+            java.util.Collection<CertificationApplication> certificationApplications);
+
+    /** How many different candidates have started at least one attempt. */
+    @Query("SELECT COUNT(DISTINCT s.user.id) FROM ExamSession s")
+    long countDistinctCandidates();
 }

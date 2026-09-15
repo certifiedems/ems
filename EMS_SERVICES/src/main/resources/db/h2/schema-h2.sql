@@ -466,7 +466,19 @@ WHERE attempts_allowed IS NULL AND payment_status IN ('SUCCESS', 'REFUNDED');
 -- list both name this column.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP;
 
+-- The exam slot booking lock (V37 on Postgres). Every booking locks this one row
+-- before counting seats, so two candidates cannot both take a slot's last seat.
+CREATE TABLE IF NOT EXISTS exam_slot_booking_locks (
+    id INT PRIMARY KEY
+);
+MERGE INTO exam_slot_booking_locks (id) KEY(id) VALUES (1);
+
+-- The answers each attempt was scored on (V38 on Postgres), so the admin exam
+-- tracker can show which questions were answered wrong, not only how many.
+ALTER TABLE exam_attempts ADD COLUMN IF NOT EXISTS submitted_answers_json CLOB;
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_certification_applications_scheduled_exam_time ON certification_applications (scheduled_exam_time);
 CREATE INDEX IF NOT EXISTS idx_payments_provider_order_id ON payments (provider_order_id);
 CREATE INDEX IF NOT EXISTS idx_users_email          ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_mobile_number  ON users (mobile_number);

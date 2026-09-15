@@ -39,6 +39,7 @@ import com.ems.dto.response.ExamAttemptAllowanceResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamQuestionPayloadResponse;
 import com.ems.dto.response.ExamSessionQuestionResponse;
+import com.ems.dto.response.ExamSlotAvailabilityResponse;
 import com.ems.dto.response.ExamStartResponse;
 import com.ems.dto.response.ExamWorkflowApplicationResponse;
 import com.ems.dto.response.PaymentResponse;
@@ -47,6 +48,7 @@ import com.ems.entity.Certification;
 import com.ems.entity.CertificationApplication;
 import com.ems.entity.Exam;
 import com.ems.entity.ExamSession;
+import com.ems.entity.ExamSlotBookingLock;
 import com.ems.entity.Question;
 import com.ems.entity.User;
 import com.ems.enums.CertificationApplicationStatus;
@@ -62,6 +64,7 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.CertificationRepository;
 import com.ems.repository.ExamRepository;
 import com.ems.repository.ExamSessionRepository;
+import com.ems.repository.ExamSlotBookingLockRepository;
 import com.ems.repository.QuestionRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.AuditService;
@@ -72,6 +75,7 @@ import com.ems.service.PaymentService;
 import com.ems.service.ProctoringPolicyService;
 import com.ems.util.ExamAttemptAllowance;
 import com.ems.util.ExamQuestionBlueprint;
+import com.ems.util.ExamSlot;
 import com.ems.util.ExamStartWindow;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -106,6 +110,9 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 			.ofPattern("d MMM uuuu, HH:mm 'UTC'")
 			.withZone(ZoneOffset.UTC);
 
+	/** Longest stretch one slot availability read may cover: a local day in any timezone, with room to spare. */
+	private static final Duration MAX_SLOT_RANGE = Duration.ofDays(2);
+
 	private final CertificationJourneyService certificationJourneyService;
 	private final CertificationApplicationRepository certificationApplicationRepository;
 	private final CertificationRepository certificationRepository;
@@ -118,6 +125,7 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	private final AuditService auditService;
 	private final ProctoringPolicyService proctoringPolicyService;
 	private final ExamAttemptPolicyService examAttemptPolicyService;
+	private final ExamSlotBookingLockRepository examSlotBookingLockRepository;
 
 	@Override
 	@Transactional(readOnly = true)
@@ -350,9 +358,112 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 					HttpStatus.BAD_REQUEST);
 		}
 
+		/*
+		 * Refused rather than rounded to the nearest slot. Rounding would book a
+		 * time the candidate did not pick, and move their start window with it.
+		 */
+		int durationMinutes = examDurationMinutes(exam);
+		if (!ExamSlot.isSlotStart(request.scheduledExamTime(), durationMinutes)) {
+			throw new BusinessException(
+					offTimetableMessage(request.scheduledExamTime(), durationMinutes),
+					HttpStatus.BAD_REQUEST);
+		}
+
+		/*
+		 * Seats are counted under a lock every booking takes, so two candidates
+		 * confirming the last seat together cannot both count 99. It is held until
+		 * this transaction commits, which is after the booking below is saved.
+		 */
+		examSlotBookingLockRepository.findByIdForUpdate(ExamSlotBookingLock.BOOKING_LOCK_ID)
+				.orElseThrow(() -> new IllegalStateException(
+						"exam_slot_booking_locks is missing its row; migration V37 creates it"));
+		ExamSlot.Span slot = ExamSlot.Span.of(request.scheduledExamTime(), durationMinutes);
+		List<ExamSlot.Span> bookings = seatHoldingBookings(slot.start(), slot.end(), application.getId());
+		if (ExamSlot.seatsTaken(slot, bookings) >= ExamSlot.CAPACITY) {
+			throw new BusinessException(
+					"This slot is full: all " + ExamSlot.CAPACITY + " seats are booked. Pick another slot.",
+					HttpStatus.CONFLICT);
+		}
+
 		application.setScheduledExamTime(request.scheduledExamTime());
 		CertificationApplication saved = certificationApplicationRepository.save(application);
 		return toWorkflowApplicationResponse(saved);
+	}
+
+	@Override
+	@Transactional(readOnly = true)
+	public ExamSlotAvailabilityResponse getSlotAvailability(String email, Long applicationId, Instant from,
+			Instant to) {
+		if (!from.isBefore(to) || Duration.between(from, to).compareTo(MAX_SLOT_RANGE) > 0) {
+			throw new BusinessException(
+					"Slots can be listed for up to " + MAX_SLOT_RANGE.toDays()
+							+ " days at a time, with 'from' before 'to'.",
+					HttpStatus.BAD_REQUEST);
+		}
+
+		CertificationApplication application = findApplication(email, applicationId);
+		Exam exam = application.getExam();
+		if (exam == null) {
+			throw new BusinessException("Application is not linked to an exam", HttpStatus.BAD_REQUEST);
+		}
+
+		int durationMinutes = examDurationMinutes(exam);
+		Instant now = Instant.now();
+		// The same bounds scheduleExam holds a booking to, so every slot listed is one it accepts.
+		List<Instant> starts = ExamSlot.slotsBetween(from, to, durationMinutes).stream()
+				.filter(start -> !ExamStartWindow.hasClosed(start, now))
+				.filter(start -> exam.getScheduledStartTime() == null || !start.isBefore(exam.getScheduledStartTime()))
+				.filter(start -> exam.getScheduledEndTime() == null || !start.isAfter(exam.getScheduledEndTime()))
+				.toList();
+
+		List<ExamSlotAvailabilityResponse.Slot> slots = List.of();
+		if (!starts.isEmpty()) {
+			// One read covering every slot listed, from the first start to the last slot's end.
+			Instant rangeEnd = ExamSlot.Span.of(starts.get(starts.size() - 1), durationMinutes).end();
+			List<ExamSlot.Span> bookings = seatHoldingBookings(starts.get(0), rangeEnd, application.getId());
+			slots = starts.stream()
+					.map(start -> new ExamSlotAvailabilityResponse.Slot(
+							start,
+							start.plus(Duration.ofMinutes(durationMinutes)),
+							Math.max(0, ExamSlot.CAPACITY
+									- ExamSlot.seatsTaken(ExamSlot.Span.of(start, durationMinutes), bookings))))
+					.toList();
+		}
+
+		return new ExamSlotAvailabilityResponse(
+				exam.getId(),
+				durationMinutes,
+				(int) ExamSlot.BREAK.toMinutes(),
+				ExamSlot.CAPACITY,
+				slots);
+	}
+
+	/**
+	 * Every booking holding a seat that could overlap {@code [from, to)}, other
+	 * than {@code applicationId}'s own. Reaches back {@link ExamSlot#LOOKBACK} so
+	 * a booking that started earlier and is still running is counted too.
+	 */
+	private List<ExamSlot.Span> seatHoldingBookings(Instant from, Instant to, Long applicationId) {
+		return certificationApplicationRepository
+				.findSeatHoldingBookings(from.minus(ExamSlot.LOOKBACK), to, applicationId).stream()
+				.map(row -> ExamSlot.Span.of((Instant) row[0], (Integer) row[1]))
+				.toList();
+	}
+
+	/**
+	 * Why a time off the timetable was refused, naming the slots either side of
+	 * it so the candidate is not left to do the arithmetic.
+	 */
+	private static String offTimetableMessage(Instant requested, int durationMinutes) {
+		Duration length = ExamSlot.length(durationMinutes);
+		List<String> nearest = ExamSlot
+				.slotsBetween(requested.minus(length), requested.plus(length), durationMinutes).stream()
+				.map(ExamWorkflowServiceImpl::formatWindowBound)
+				.toList();
+		String rule = "Slots for this exam start every " + length.toMinutes() + " minutes from 00:00 UTC — the "
+				+ durationMinutes + "-minute exam and a " + ExamSlot.BREAK.toMinutes()
+				+ "-minute break. Pick one of the listed slots";
+		return nearest.isEmpty() ? rule + "." : rule + ", such as " + String.join(" or ", nearest) + ".";
 	}
 
 	@Override
@@ -519,8 +630,12 @@ public class ExamWorkflowServiceImpl implements ExamWorkflowService {
 	}
 
 	private long examDurationSeconds(Exam exam) {
+		return examDurationMinutes(exam) * 60L;
+	}
+
+	private int examDurationMinutes(Exam exam) {
 		Integer durationMinutes = exam == null ? null : exam.getDurationMinutes();
-		return (durationMinutes == null ? DEFAULT_EXAM_DURATION_MINUTES : durationMinutes) * 60L;
+		return durationMinutes == null ? DEFAULT_EXAM_DURATION_MINUTES : durationMinutes;
 	}
 
 	@Override

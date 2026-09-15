@@ -1,5 +1,6 @@
 package com.ems.service;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -12,6 +13,7 @@ import com.ems.dto.request.WorkflowExamScheduleRequest;
 import com.ems.dto.response.ExamAttemptAllowanceResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamSessionQuestionResponse;
+import com.ems.dto.response.ExamSlotAvailabilityResponse;
 import com.ems.dto.response.ExamStartResponse;
 import com.ems.dto.response.ExamWorkflowApplicationResponse;
 import com.ems.dto.response.PaymentResponse;
@@ -36,6 +38,12 @@ public interface ExamWorkflowService {
 
     ExamWorkflowApplicationResponse scheduleExam(String email, Long applicationId,
             WorkflowExamScheduleRequest request);
+
+    /**
+     * The slots this application's exam can be booked into, starting at or after
+     * {@code from} and before {@code to}, with the seats left in each.
+     */
+    ExamSlotAvailabilityResponse getSlotAvailability(String email, Long applicationId, Instant from, Instant to);
 
     ExamStartResponse startExam(String email, Long applicationId, ExamStartRequest request);
 

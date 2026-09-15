@@ -7,9 +7,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -44,6 +42,7 @@ import com.ems.repository.ExamSessionRepository;
 import com.ems.repository.QuestionRepository;
 import com.ems.service.AuditService;
 import com.ems.service.ResultEvaluationService;
+import com.ems.util.AnswerMarking;
 import com.ems.util.ExamAttemptAllowance;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -114,16 +113,13 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 				.reduce(BigDecimal.ZERO, BigDecimal::add);
 
 		for (Map.Entry<Long, List<String>> submitted : submittedAnswers.entrySet()) {
-			List<String> selectedOptions = normalizeOptions(submitted.getValue());
-			if (selectedOptions.isEmpty()) {
+			if (!AnswerMarking.isAnswered(submitted.getValue())) {
 				continue;
 			}
 
 			attemptedQuestions++;
 			Question question = questionById.get(submitted.getKey());
-			List<String> correctOptions = normalizeOptions(readStringList(question.getCorrectOptionsJson()));
-
-			if (asNormalizedSet(selectedOptions).equals(asNormalizedSet(correctOptions))) {
+			if (AnswerMarking.isCorrect(submitted.getValue(), readStringList(question.getCorrectOptionsJson()))) {
 				correctAnswers++;
 				obtainedMarks = obtainedMarks.add(question.getMarks());
 			}
@@ -155,6 +151,7 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 				.percentage(percentage)
 				.resultStatus(resultStatus)
 				.submittedAt(submittedAt)
+				.submittedAnswersJson(writeSubmittedAnswers(submittedAnswers))
 				.build());
 
 		session.setSessionEndTime(submittedAt);
@@ -301,19 +298,19 @@ public class ResultEvaluationServiceImpl implements ResultEvaluationService {
 		}
 	}
 
-	private List<String> normalizeOptions(List<String> options) {
-		if (options == null) {
-			return List.of();
+	/**
+	 * The submission as it is kept on the attempt: what the candidate chose, as
+	 * sent, rather than the lower-cased form it was compared in.
+	 */
+	private String writeSubmittedAnswers(Map<Long, List<String>> submittedAnswers) {
+		Map<String, List<String>> byQuestionId = new LinkedHashMap<>();
+		submittedAnswers.forEach((questionId, options) ->
+				byQuestionId.put(String.valueOf(questionId), options == null ? List.of() : options));
+		try {
+			return objectMapper.writeValueAsString(byQuestionId);
+		} catch (JsonProcessingException ex) {
+			throw new BusinessException("Failed to record submitted answers", HttpStatus.INTERNAL_SERVER_ERROR);
 		}
-
-		return options.stream()
-				.filter(option -> option != null && !option.isBlank())
-				.map(option -> option.trim().toLowerCase(Locale.ROOT))
-				.toList();
-	}
-
-	private Set<String> asNormalizedSet(List<String> values) {
-		return values.stream().collect(Collectors.toSet());
 	}
 
 	private ExamResultResponse toResultResponse(ExamAttempt attempt) {

@@ -17,6 +17,11 @@ export const examAPI = {
 	scheduleExam: (applicationId, data) =>
 		apiClient.post(`/exam-workflow/applications/${applicationId}/schedule`, data),
 
+	// The slots an application's exam can be booked into between `from` and `to`
+	// (the candidate's local day, as ISO instants), with the seats left in each.
+	getExamSlots: (applicationId, params) =>
+		apiClient.get(`/exam-workflow/applications/${applicationId}/slots`, { params }),
+
 	startExam: (applicationId, data) =>
 		apiClient.post(`/exam-workflow/applications/${applicationId}/start`, data || {}),
 

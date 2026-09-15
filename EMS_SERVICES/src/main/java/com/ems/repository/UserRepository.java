@@ -1,6 +1,7 @@
 package com.ems.repository;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -54,4 +55,17 @@ public interface UserRepository extends JpaRepository<User, Long> {
     @Modifying
     @Query("update User u set u.lastLoginAt = :lastLoginAt where u.id = :id")
     int updateLastLoginAt(@Param("id") Long id, @Param("lastLoginAt") Instant lastLoginAt);
+
+    /**
+     * When each candidate account was created, on the audit clock. Administrators
+     * are left out: the board figures count the people sitting exams, not the
+     * people running them.
+     */
+    @Query("""
+            select u.createdDate from User u
+            where u.id not in (
+                select admin.id from User admin join admin.roles r
+                where r.name = com.ems.enums.RoleName.ADMIN)
+            """)
+    List<LocalDateTime> findCandidateRegistrationTimes();
 }

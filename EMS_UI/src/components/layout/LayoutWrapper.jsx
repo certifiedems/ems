@@ -24,6 +24,7 @@ import TuneIcon from '@mui/icons-material/TuneRounded'
 import EventNoteIcon from '@mui/icons-material/EventNoteRounded'
 import DateRangeIcon from '@mui/icons-material/DateRangeRounded'
 import ReplayIcon from '@mui/icons-material/ReplayRounded'
+import TrackChangesIcon from '@mui/icons-material/TrackChangesRounded'
 import TableChartIcon from '@mui/icons-material/TableChartRounded'
 import PaidIcon from '@mui/icons-material/PaidRounded'
 import HistoryRounded from '@mui/icons-material/HistoryRounded'
@@ -71,6 +72,9 @@ const LayoutWrapper = ({ children }) => {
     { label: 'Booking Windows', icon: <DateRangeIcon />, path: '/admin/booking-windows' },
     // Also about sitting an exam: how many times one payment lets a candidate try.
     { label: 'Exam Attempts', icon: <ReplayIcon />, path: '/admin/exam-attempts' },
+    // The sittings themselves: who is booked when, who is sitting now, and how
+    // each attempt went, question by question.
+    { label: 'Exam Tracker', icon: <TrackChangesIcon />, path: '/admin/exam-tracker' },
     { label: 'Questions', icon: <QuizIcon />, path: '/admin/questions' },
     { label: 'Payments', icon: <PaidIcon />, path: '/admin/payments' },
     { label: 'Exam Reports', icon: <TableChartIcon />, path: '/admin/exam-reports' },

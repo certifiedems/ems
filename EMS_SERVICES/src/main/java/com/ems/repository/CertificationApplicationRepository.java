@@ -112,4 +112,50 @@ public interface CertificationApplicationRepository extends JpaRepository<Certif
             + "AND NOT EXISTS (SELECT 1 FROM ExamSession es WHERE es.certificationApplication = ca) "
             + "GROUP BY ca.exam.id")
     List<Object[]> countSchedulableApplicationsByExam(Instant missedBefore);
+
+    /**
+     * Bookings that hold an exam slot seat and start in {@code [from, to)}, with
+     * the length of each one's exam — what the slot timetable needs to work out
+     * which bookings overlap which.
+     *
+     * <p>A seat is held by a paid booking that has not been rejected or expired.
+     * One whose attempt has already finished held its seat while it ran, so it
+     * stays counted; a refund releases it. The application being booked is left
+     * out, so its own current seat never counts against it.</p>
+     *
+     * @return rows of {@code [scheduledExamTime, durationMinutes]}
+     */
+    @Query("SELECT ca.scheduledExamTime, e.durationMinutes "
+            + "FROM CertificationApplication ca JOIN ca.exam e "
+            + "WHERE ca.scheduledExamTime >= :from AND ca.scheduledExamTime < :to "
+            + "AND ca.id <> :excludedApplicationId "
+            + "AND ca.paymentStatus = com.ems.enums.PaymentStatus.SUCCESS "
+            + "AND ca.applicationStatus NOT IN ("
+            + "  com.ems.enums.CertificationApplicationStatus.REJECTED, "
+            + "  com.ems.enums.CertificationApplicationStatus.EXPIRED)")
+    List<Object[]> findSeatHoldingBookings(Instant from, Instant to, Long excludedApplicationId);
+
+    /**
+     * Every application the admin exam tracker follows: those holding a slot,
+     * and those paid for but not booked yet. Candidate and exam come in the same
+     * query, since every row shows both.
+     *
+     * <p>An unpaid application with no slot is left out. It is an intent to sit,
+     * not a sitting anyone is waiting on.</p>
+     */
+    @Query("SELECT ca FROM CertificationApplication ca "
+            + "JOIN FETCH ca.user "
+            + "JOIN FETCH ca.exam "
+            + "WHERE ca.scheduledExamTime IS NOT NULL "
+            + "OR ca.paymentStatus = com.ems.enums.PaymentStatus.SUCCESS")
+    List<CertificationApplication> findTrackedWithCandidateAndExam();
+
+    /** How many different candidates have applied for any level. */
+    @Query("SELECT COUNT(DISTINCT ca.user.id) FROM CertificationApplication ca")
+    long countDistinctApplicants();
+
+    /** How many different candidates have paid for any application. */
+    @Query("SELECT COUNT(DISTINCT ca.user.id) FROM CertificationApplication ca "
+            + "WHERE ca.paymentStatus = com.ems.enums.PaymentStatus.SUCCESS")
+    long countDistinctPaidApplicants();
 }

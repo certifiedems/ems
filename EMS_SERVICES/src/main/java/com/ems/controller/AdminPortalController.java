@@ -24,7 +24,10 @@ import org.springframework.web.bind.annotation.RestController;
 import com.ems.audit.AuditEventType;
 import com.ems.audit.AuditOutcome;
 import com.ems.dto.request.AdminPaymentFilter;
+import com.ems.dto.response.AdminAnalyticsResponse;
 import com.ems.dto.response.AdminAuditLogResponse;
+import com.ems.dto.response.AdminExamBookingDetailResponse;
+import com.ems.dto.response.AdminExamBookingResponse;
 import com.ems.dto.response.AdminPaymentReconciliation;
 import com.ems.dto.response.AdminUserResponse;
 import com.ems.dto.response.AdminPaymentResponse;
@@ -41,6 +44,8 @@ import com.ems.enums.PaymentGatewayMode;
 import com.ems.enums.PaymentStatus;
 import com.ems.enums.QuestionSeverity;
 import com.ems.enums.ReportFormat;
+import com.ems.service.AdminAnalyticsService;
+import com.ems.service.AdminExamTrackerService;
 import com.ems.service.AdminPortalService;
 import com.ems.service.PaymentReceiptContent;
 import com.ems.service.ReportFileContent;
@@ -57,6 +62,8 @@ import lombok.RequiredArgsConstructor;
 public class AdminPortalController {
 
     private final AdminPortalService adminPortalService;
+    private final AdminExamTrackerService adminExamTrackerService;
+    private final AdminAnalyticsService adminAnalyticsService;
 
     // — Users
 
@@ -218,6 +225,43 @@ public class AdminPortalController {
             @PathVariable Long sessionId) {
         return ok("Session recordings fetched successfully",
                 adminPortalService.getRecordingsForSession(sessionId));
+    }
+
+    // — Exam tracker
+
+    /**
+     * Every paid or booked application, with the stage it has reached between
+     * slot and result. Unfiltered, like the violations list: the console groups
+     * and searches it in the browser.
+     */
+    @GetMapping("/exam-tracker")
+    public ResponseEntity<ApiResponse<List<AdminExamBookingResponse>>> listExamBookings() {
+        return ok("Exam bookings fetched successfully", adminExamTrackerService.listBookings());
+    }
+
+    /**
+     * One application end to end: payment, slot, the attempt with every question
+     * it drew and the verdict on each answer, violations and certificate.
+     */
+    @GetMapping("/exam-tracker/{applicationId}")
+    public ResponseEntity<ApiResponse<AdminExamBookingDetailResponse>> getExamBooking(
+            @PathVariable Long applicationId) {
+        return ok("Exam booking fetched successfully", adminExamTrackerService.getBooking(applicationId));
+    }
+
+    // — Analytics
+
+    /**
+     * The overview's board figures: all-time totals and {@code months} (1–36) of
+     * monthly trends. {@code timeZone} decides which month a payment or sign-up
+     * falls in; a missing or unrecognised zone falls back to UTC.
+     */
+    @GetMapping("/analytics")
+    public ResponseEntity<ApiResponse<AdminAnalyticsResponse>> getAnalytics(
+            @RequestParam(defaultValue = "12") int months,
+            @RequestParam(required = false) String timeZone) {
+        return ok("Analytics fetched successfully",
+                adminAnalyticsService.getBoardAnalytics(months, resolveZone(timeZone)));
     }
 
     // — Audit trail

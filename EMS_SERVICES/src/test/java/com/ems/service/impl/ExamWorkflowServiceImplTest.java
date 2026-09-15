@@ -3,6 +3,8 @@ package com.ems.service.impl;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -10,6 +12,8 @@ import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,8 +24,10 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
 
 import com.ems.dto.request.ExamProgressSaveRequest;
 import com.ems.dto.request.ExamWorkflowApplicationRequest;
@@ -31,11 +37,13 @@ import com.ems.dto.request.QuestionAnswerSubmissionRequest;
 import com.ems.dto.request.WorkflowExamScheduleRequest;
 import com.ems.dto.response.CertificationEligibilityResponse;
 import com.ems.dto.response.ExamProgressResponse;
+import com.ems.dto.response.ExamSlotAvailabilityResponse;
 import com.ems.dto.response.ExamStartResponse;
 import com.ems.dto.response.ExamWorkflowApplicationResponse;
 import com.ems.entity.CertificationApplication;
 import com.ems.entity.Exam;
 import com.ems.entity.ExamSession;
+import com.ems.entity.ExamSlotBookingLock;
 import com.ems.entity.Question;
 import com.ems.entity.User;
 import com.ems.enums.CertificationApplicationStatus;
@@ -48,6 +56,7 @@ import com.ems.repository.CertificationApplicationRepository;
 import com.ems.repository.CertificationRepository;
 import com.ems.repository.ExamRepository;
 import com.ems.repository.ExamSessionRepository;
+import com.ems.repository.ExamSlotBookingLockRepository;
 import com.ems.repository.QuestionRepository;
 import com.ems.repository.UserRepository;
 import com.ems.service.AuditService;
@@ -55,6 +64,7 @@ import com.ems.service.CertificationJourneyService;
 import com.ems.service.ExamAttemptPolicyService;
 import com.ems.service.PaymentService;
 import com.ems.service.ProctoringPolicyService;
+import com.ems.util.ExamSlot;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @ExtendWith(MockitoExtension.class)
@@ -95,6 +105,9 @@ class ExamWorkflowServiceImplTest {
 	@Mock
 	private ExamAttemptPolicyService examAttemptPolicyService;
 
+	@Mock
+	private ExamSlotBookingLockRepository examSlotBookingLockRepository;
+
 	private ExamWorkflowServiceImpl examWorkflowService;
 
 	@BeforeEach
@@ -111,7 +124,8 @@ class ExamWorkflowServiceImplTest {
 				new ObjectMapper(),
 				auditService,
 				proctoringPolicyService,
-				examAttemptPolicyService);
+				examAttemptPolicyService,
+				examSlotBookingLockRepository);
 	}
 
 	@Test
@@ -517,7 +531,8 @@ class ExamWorkflowServiceImplTest {
 	@Test
 	void scheduleExam_beforeAnyAttempt_movesTheBookingAndItsWindow() {
 		CertificationApplication application = startableApplication();
-		Instant newSlot = Instant.now().plus(2, ChronoUnit.DAYS);
+		Instant newSlot = slotInDays(2);
+		lockAvailable();
 
 		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
 		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
@@ -640,9 +655,10 @@ class ExamWorkflowServiceImplTest {
 				.thenReturn(Optional.empty());
 		when(certificationApplicationRepository.save(any(CertificationApplication.class)))
 				.thenAnswer(call -> call.getArgument(0));
+		lockAvailable();
 
 		ExamWorkflowApplicationResponse response = examWorkflowService.scheduleExam(
-				EMAIL, 30L, new WorkflowExamScheduleRequest(Instant.now().plus(2, ChronoUnit.DAYS)));
+				EMAIL, 30L, new WorkflowExamScheduleRequest(slotInDays(2)));
 
 		assertThat(response.bookingOpensAt()).isEqualTo(opensAt);
 		assertThat(response.bookingClosesAt()).isEqualTo(closesAt);
@@ -960,6 +976,160 @@ class ExamWorkflowServiceImplTest {
 			when(questionRepository.findByCertificationLevelAndSeverityInAndActiveTrue(
 					CertificationLevel.L1, List.of(severity))).thenReturn(pool);
 		}
+	}
+
+	/**
+	 * A time off the timetable is refused rather than rounded, and the refusal
+	 * names the slots either side of it. Nothing is locked for a request that
+	 * could never be booked.
+	 */
+	@Test
+	void scheduleExam_offTheTimetable_isRefusedAndNamesTheNearestSlots() {
+		CertificationApplication application = startableApplication();
+		Instant slot = slotInDays(2);
+		DateTimeFormatter utcClock = DateTimeFormatter.ofPattern("HH:mm 'UTC'").withZone(ZoneOffset.UTC);
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.scheduleExam(
+						EMAIL, 30L, new WorkflowExamScheduleRequest(slot.plus(7, ChronoUnit.MINUTES))));
+
+		assertThat(ex.getMessage()).contains("every 75 minutes");
+		assertThat(ex.getMessage())
+				.contains(utcClock.format(slot), utcClock.format(slot.plus(75, ChronoUnit.MINUTES)));
+		verifyNoInteractions(examSlotBookingLockRepository);
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * The last seat goes to one candidate only. Seats are counted after the
+	 * booking lock is taken, and a full slot is a conflict with the bookings
+	 * already made rather than a fault in the request.
+	 */
+	@Test
+	void scheduleExam_whenTheSlotIsFull_isRefusedAsAConflictCountedUnderTheLock() {
+		CertificationApplication application = startableApplication();
+		Instant slot = slotInDays(2);
+		List<Object[]> fullSlot = new ArrayList<>();
+		for (int seat = 0; seat < ExamSlot.CAPACITY; seat++) {
+			fullSlot.add(new Object[] { slot, 60 });
+		}
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+		lockAvailable();
+		when(certificationApplicationRepository.findSeatHoldingBookings(any(), any(), eq(30L))).thenReturn(fullSlot);
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.scheduleExam(EMAIL, 30L, new WorkflowExamScheduleRequest(slot)));
+
+		assertThat(ex.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+		assertThat(ex.getMessage()).contains("full");
+		InOrder inOrder = inOrder(examSlotBookingLockRepository, certificationApplicationRepository);
+		inOrder.verify(examSlotBookingLockRepository).findByIdForUpdate(ExamSlotBookingLock.BOOKING_LOCK_ID);
+		inOrder.verify(certificationApplicationRepository).findSeatHoldingBookings(any(), any(), eq(30L));
+		verify(certificationApplicationRepository, never()).save(any(CertificationApplication.class));
+	}
+
+	/**
+	 * Ninety-nine seats taken leaves the last one. A full slot just before takes
+	 * none of them: its break ends as this slot starts.
+	 */
+	@Test
+	void scheduleExam_takesTheLastSeatBesideAFullSlotBefore() {
+		CertificationApplication application = startableApplication();
+		Instant slot = slotInDays(2);
+		List<Object[]> bookings = new ArrayList<>();
+		for (int seat = 0; seat < ExamSlot.CAPACITY; seat++) {
+			bookings.add(new Object[] { slot.minus(75, ChronoUnit.MINUTES), 60 });
+		}
+		for (int seat = 0; seat < ExamSlot.CAPACITY - 1; seat++) {
+			bookings.add(new Object[] { slot, 60 });
+		}
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(examSessionRepository.findTopByCertificationApplicationOrderBySessionStartTimeDescIdDesc(application))
+				.thenReturn(Optional.empty());
+		when(certificationApplicationRepository.save(any(CertificationApplication.class)))
+				.thenAnswer(call -> call.getArgument(0));
+		lockAvailable();
+		when(certificationApplicationRepository.findSeatHoldingBookings(
+				slot.minus(ExamSlot.LOOKBACK), slot.plus(75, ChronoUnit.MINUTES), 30L))
+				.thenReturn(bookings);
+
+		ExamWorkflowApplicationResponse response = examWorkflowService.scheduleExam(
+				EMAIL, 30L, new WorkflowExamScheduleRequest(slot));
+
+		assertThat(response.scheduledExamTime()).isEqualTo(slot);
+	}
+
+	/**
+	 * The board lists only the slots booking would accept — inside the booking
+	 * window and not already past — with the seats left at each one's busiest
+	 * moment.
+	 */
+	@Test
+	void getSlotAvailability_listsBookableSlotsWithTheSeatsLeftInEach() {
+		CertificationApplication application = startableApplication();
+		Instant day = Instant.now().plus(2, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS);
+		application.getExam().setScheduledStartTime(Instant.now().minus(1, ChronoUnit.DAYS));
+		// Bookings close at 03:00, so the 03:45 slot and every one after it is left off.
+		application.getExam().setScheduledEndTime(day.plus(3, ChronoUnit.HOURS));
+
+		when(userRepository.findByEmailIgnoreCase(EMAIL)).thenReturn(Optional.of(application.getUser()));
+		when(certificationApplicationRepository.findByIdAndUser(30L, application.getUser()))
+				.thenReturn(Optional.of(application));
+		when(certificationApplicationRepository.findSeatHoldingBookings(any(), any(), eq(30L)))
+				.thenReturn(List.of(
+						new Object[] { day, 60 },
+						new Object[] { day, 60 },
+						// A 90-minute exam from 01:15 runs, with its break, to 03:00: into the 02:30 slot.
+						new Object[] { day.plus(75, ChronoUnit.MINUTES), 90 }));
+
+		ExamSlotAvailabilityResponse response = examWorkflowService.getSlotAvailability(
+				EMAIL, 30L, day, day.plus(1, ChronoUnit.DAYS));
+
+		assertThat(response.capacity()).isEqualTo(ExamSlot.CAPACITY);
+		assertThat(response.breakMinutes()).isEqualTo(15);
+		assertThat(response.slots()).extracting(ExamSlotAvailabilityResponse.Slot::startsAt)
+				.containsExactly(day, day.plus(75, ChronoUnit.MINUTES), day.plus(150, ChronoUnit.MINUTES));
+		assertThat(response.slots()).extracting(ExamSlotAvailabilityResponse.Slot::seatsLeft)
+				.containsExactly(98, 99, 99);
+		assertThat(response.slots().get(0).endsAt()).isEqualTo(day.plus(60, ChronoUnit.MINUTES));
+	}
+
+	@Test
+	void getSlotAvailability_overMoreThanTwoDays_isRefusedBeforeAnythingIsRead() {
+		Instant from = Instant.now();
+
+		BusinessException ex = assertThrows(
+				BusinessException.class,
+				() -> examWorkflowService.getSlotAvailability(EMAIL, 30L, from, from.plus(3, ChronoUnit.DAYS)));
+
+		assertThat(ex.getMessage()).contains("up to 2 days");
+		verifyNoInteractions(certificationApplicationRepository);
+	}
+
+	/** 10:00 UTC, {@code days} from now: on the timetable of {@link #startableApplication()}'s 60-minute exam. */
+	private static Instant slotInDays(int days) {
+		return Instant.now().plus(days, ChronoUnit.DAYS).truncatedTo(ChronoUnit.DAYS).plus(10, ChronoUnit.HOURS);
+	}
+
+	private void lockAvailable() {
+		when(examSlotBookingLockRepository.findByIdForUpdate(ExamSlotBookingLock.BOOKING_LOCK_ID))
+				.thenReturn(Optional.of(new ExamSlotBookingLock(ExamSlotBookingLock.BOOKING_LOCK_ID)));
 	}
 
 	private CertificationApplication startableApplication() {

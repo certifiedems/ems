@@ -65,4 +65,15 @@ public class ExamAttempt extends BaseAuditEntity {
 
     @Column(name = "submitted_at")
     private Instant submittedAt;
+
+    /**
+     * The answers this attempt was scored on, as
+     * {@code {"<questionId>": ["option", ...]}} — the shape the session's
+     * autosave draft uses.
+     *
+     * <p>Kept so an administrator can see which questions were answered wrong,
+     * not only how many. Null on attempts submitted before it was recorded.</p>
+     */
+    @Column(name = "submitted_answers_json")
+    private String submittedAnswersJson;
 }

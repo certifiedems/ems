@@ -45,27 +45,6 @@ const panelSx = {
   boxShadow: shadows.card,
 }
 
-/**
- * An Instant from the API rendered for a `datetime-local` input.
- *
- * That input has no timezone of its own — it reads and writes wall-clock text —
- * so the value has to be the local time, not the ISO string the server sent.
- * Feeding it a UTC string silently shifts the prefilled slot by the offset,
- * which on a reschedule is the difference between confirming the booking you
- * have and moving it by five and a half hours.
- */
-const toLocalInputValue = (isoString) => {
-  if (!isoString) {
-    return ''
-  }
-  const date = new Date(isoString)
-  if (Number.isNaN(date.getTime())) {
-    return ''
-  }
-  const offsetMs = date.getTimezoneOffset() * 60 * 1000
-  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16)
-}
-
 const formatSlot = (isoString) => {
   if (!isoString) {
     return ''
@@ -86,25 +65,18 @@ const toLocalDateKey = (date) => {
 }
 
 /**
- * The hours candidates pick most often, offered as one click each.
+ * The instants a local calendar day starts and ends at, for a `YYYY-MM-DD` key.
  *
- * A shortcut over the picker, never a replacement for it: the server takes any
- * instant, so a grid of six fixed times as the only way in would turn a booking
- * rule the product does not have into one it appears to. The field above stays
- * free to take 07:15 or 21:40.
- *
- * `time` is the 24-hour half of a `datetime-local` value; `label` is what the
- * button says. Both are written out rather than derived so the wording on the
- * button never drifts from the value it sets.
+ * Built from the date parts rather than by adding 24 hours, so a day that gains
+ * or loses an hour to daylight saving still ends at its own midnight.
  */
-const preferredSlots = [
-  { label: '9:00 AM', time: '09:00' },
-  { label: '10:00 AM', time: '10:00' },
-  { label: '11:30 AM', time: '11:30' },
-  { label: '1:00 PM', time: '13:00' },
-  { label: '3:00 PM', time: '15:00' },
-  { label: '4:30 PM', time: '16:30' }
-]
+const localDayBounds = (dateKey) => {
+  const [year, month, day] = dateKey.split('-').map(Number)
+  return {
+    from: new Date(year, month - 1, day).toISOString(),
+    to: new Date(year, month - 1, day + 1).toISOString()
+  }
+}
 
 const doList = [
   'Keep your face visible and stay in frame.',
@@ -518,7 +490,19 @@ const ViolationNotice = () => (
 const ExamSchedulePage = () => {
   const navigate = useNavigate()
   const { applicationId } = useParams()
-  const [scheduledTime, setScheduledTime] = useState('')
+  /** The local day the slot board is showing, as `YYYY-MM-DD`; empty until one is set. */
+  const [slotDate, setSlotDate] = useState('')
+  /** The start of the slot the candidate has picked, exactly as the server listed it. */
+  const [selectedSlot, setSelectedSlot] = useState('')
+  /**
+   * The slots on `slotDate`, and the rules they were laid out by, as the server
+   * sent them. Seats are counted when the day loads and can go stale while the
+   * page is open, so `slotsVersion` is bumped to load the day again.
+   */
+  const [slotBoard, setSlotBoard] = useState({
+    loading: false, error: '', slots: [], capacity: null, breakMinutes: null, examDurationMinutes: null
+  })
+  const [slotsVersion, setSlotsVersion] = useState(0)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   /** The slot currently booked on the server; empty until one is confirmed. */
@@ -707,100 +691,41 @@ const ExamSchedulePage = () => {
   const bookingClosed = bookingClosesAt !== null && now > bookingClosesAt
   /** The exam is not taking bookings yet — rare, but the picker must say so. */
   const bookingNotOpenYet = bookingOpensAt !== null && now < bookingOpensAt
-  /** The bounds as the picker wants them: local wall-clock, not ISO. */
-  const pickerMin = toLocalInputValue(bookingWindow.opensAt) || undefined
-  const pickerMax = toLocalInputValue(bookingWindow.closesAt) || undefined
+  /** The booking window as whole local days, which is all a date field can bound. */
+  const pickerMin = bookingWindow.opensAt ? toLocalDateKey(new Date(bookingWindow.opensAt)) : undefined
+  const pickerMax = bookingWindow.closesAt ? toLocalDateKey(new Date(bookingWindow.closesAt)) : undefined
 
-  /** The time the picker is currently on, so a matching quick pick lights up. */
-  const pickedTime = scheduledTime ? scheduledTime.slice(11, 16) : null
-  /** The day the picker is currently on, or null while it is empty. */
-  const pickedDateKey = scheduledTime ? scheduledTime.slice(0, 10) : null
-
-  /**
-   * The day a quick pick would land on.
-   *
-   * The day already chosen, or — with the picker still empty — the click has to
-   * invent one, and it takes today only while that hour is still ahead.
-   * Offering "9:00 AM" at four in the afternoon and filling in a time the
-   * Confirm button then rejects is worse than simply meaning tomorrow.
-   */
-  const dayForSlot = (time) => {
-    if (pickedDateKey) {
-      return pickedDateKey
-    }
-    const today = toLocalDateKey(new Date())
-    const stillAhead = new Date(`${today}T${time}`).getTime() > Date.now()
-    return stillAhead ? today : toLocalDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000))
-  }
-
-  /*
-   * A quick pick the server would refuse is offered but disabled, rather than
-   * hidden: a morning grid that empties out as the day goes on reads as the
-   * slot being taken by someone else, which is not what has happened. `now`
-   * ticks every second, so an hour lapses out on its own.
-   *
-   * Judged against the day the click would actually use, not only the one
-   * already chosen — otherwise, with the picker still empty, all six read as
-   * available and the one that gets invented can land outside the window.
-   */
-  const isSlotUnavailable = (time) => {
-    const at = new Date(`${dayForSlot(time)}T${time}`).getTime()
-    if (!Number.isFinite(at) || at < now) {
-      return true
-    }
-    if (bookingOpensAt !== null && at < bookingOpensAt) {
-      return true
-    }
-    return bookingClosesAt !== null && at > bookingClosesAt
-  }
-
-  /** Moves the picker onto a preferred hour. */
-  const applyPreferredSlot = (time) => {
+  const pickSlotDate = (dateKey) => {
     setError('')
-    setScheduledTime(`${dayForSlot(time)}T${time}`)
+    setSlotDate(dateKey)
+    // A slot belongs to its day. Carrying the pick across would confirm a time
+    // the board on screen no longer shows.
+    setSelectedSlot('')
   }
 
   const handleSchedule = async () => {
-    if (!scheduledTime) {
-      setError('Please pick a date and time.')
-      return
-    }
-    // The picker cannot offer a past slot, but a page left open long enough
-    // will see its chosen slot slip into the past before it is confirmed.
-    if (new Date(scheduledTime).getTime() < Date.now()) {
-      setError('That time has already passed. Please pick a later date and time.')
+    if (!selectedSlot) {
+      setError('Please pick a slot.')
       return
     }
     /*
-     * The same three rules the server applies, checked here so the answer comes
-     * back in the candidate's own timezone and without a round trip. The server
-     * stays the authority — this only saves them from learning the bound by
-     * being refused.
+     * The board only lists slots inside the booking window, so this is for a
+     * page left open while the window shut — said here, in the candidate's own
+     * timezone, rather than left to the server's UTC refusal.
      */
     if (bookingClosed) {
       setError(`This exam stopped taking bookings on ${formatSlot(bookingWindow.closesAt)}. `
         + `Contact support at ${SUPPORT_EMAIL} to have the window reopened — your payment stays on this application.`)
       return
     }
-    const pickedAt = new Date(scheduledTime).getTime()
-    if (bookingOpensAt !== null && pickedAt < bookingOpensAt) {
-      setError(`This exam opens for booking on ${formatSlot(bookingWindow.opensAt)}. `
-        + 'Pick a time from then onwards.')
-      return
-    }
-    if (bookingClosesAt !== null && pickedAt > bookingClosesAt) {
-      setError(`This exam can only be booked up to ${formatSlot(bookingWindow.closesAt)}. `
-        + 'Pick an earlier time.')
-      return
-    }
     setSaving(true)
     setError('')
     try {
-      const isoTime = new Date(scheduledTime).toISOString()
-      const res = await examAPI.scheduleExam(applicationId, { scheduledExamTime: isoTime })
+      const res = await examAPI.scheduleExam(applicationId, { scheduledExamTime: selectedSlot })
       const booking = res.data.data
       setRescheduled(rescheduling)
-      setBookedSlot(booking?.scheduledExamTime || isoTime)
+      setBookedSlot(booking?.scheduledExamTime || selectedSlot)
+      setSelectedSlot('')
       setStartWindow({ start: booking?.examWindowStart, end: booking?.examWindowEnd })
       // Only when the response actually carries them. A server that does not
       // send these must leave what the dashboard gave us standing, rather than
@@ -818,6 +743,9 @@ const ExamSchedulePage = () => {
       setWizardStep(1)
     } catch (err) {
       setError(err.response?.data?.message || 'Failed to schedule exam.')
+      // Seats may have moved since the day loaded — most often, this slot has
+      // just filled — so the board is loaded again rather than left to mislead.
+      setSlotsVersion((version) => version + 1)
     } finally {
       setSaving(false)
     }
@@ -830,9 +758,11 @@ const ExamSchedulePage = () => {
     if (bookingClosed) {
       return
     }
-    setError('')
     setRescheduled(false)
-    setScheduledTime(toLocalInputValue(bookedSlot))
+    // Opens on the day already booked while it is still ahead; a missed slot's
+    // day has nothing left in it to book.
+    const booked = new Date(bookedSlot)
+    pickSlotDate(toLocalDateKey(booked.getTime() > Date.now() ? booked : new Date()))
     setRescheduling(true)
   }
 
@@ -846,6 +776,54 @@ const ExamSchedulePage = () => {
   // taking bookings — a picker with no confirmable date in it is worse than no
   // picker, because it looks like the candidate is one more try away.
   const showPicker = (!bookedSlot || rescheduling) && !bookingClosed
+
+  /*
+   * The board opens on a day rather than on nothing: today, or the day bookings
+   * open if that is still ahead. It waits for the dashboard read, which is what
+   * says when that is.
+   */
+  useEffect(() => {
+    if (!showPicker || slotDate || levelLoading) {
+      return undefined
+    }
+    const opens = bookingWindow.opensAt ? new Date(bookingWindow.opensAt) : null
+    setSlotDate(toLocalDateKey(opens && opens.getTime() > Date.now() ? opens : new Date()))
+    return undefined
+  }, [showPicker, slotDate, levelLoading, bookingWindow.opensAt])
+
+  useEffect(() => {
+    if (!showPicker || !slotDate) {
+      return undefined
+    }
+    let mounted = true
+    setSlotBoard((current) => ({ ...current, loading: true, error: '' }))
+    ;(async () => {
+      try {
+        const res = await examAPI.getExamSlots(applicationId, localDayBounds(slotDate))
+        const board = res.data.data
+        if (mounted) {
+          setSlotBoard({
+            loading: false,
+            error: '',
+            slots: board?.slots || [],
+            capacity: board?.capacity ?? null,
+            breakMinutes: board?.breakMinutes ?? null,
+            examDurationMinutes: board?.examDurationMinutes ?? null
+          })
+        }
+      } catch (err) {
+        if (mounted) {
+          setSlotBoard((current) => ({
+            ...current,
+            loading: false,
+            slots: [],
+            error: err.response?.data?.message || 'Could not load the slots for this day.'
+          }))
+        }
+      }
+    })()
+    return () => { mounted = false }
+  }, [showPicker, slotDate, applicationId, slotsVersion])
   /*
    * The dead end, shown in place of the picker: paid for, nothing booked, and
    * no window left to book into. It is the only state on this screen the
@@ -969,9 +947,16 @@ const ExamSchedulePage = () => {
                   </Stack>
 
                   <Typography sx={{ fontSize: 12.5, lineHeight: 1.6, color: '#93AC9E' }}>
-                    Choose when you would like to take your proctored exam. You can start it from
-                    10 minutes before the time you pick until 10 minutes after — outside that window
-                    you will need to rebook. Rescheduling is free and unlimited, right up until you start.
+                    Pick a day, then one of its slots.{' '}
+                    {slotBoard.capacity !== null && (
+                      <>
+                        Each slot seats up to {slotBoard.capacity} candidates and runs for
+                        the {slotBoard.examDurationMinutes}-minute exam plus a {slotBoard.breakMinutes}-minute
+                        break before the next one.{' '}
+                      </>
+                    )}
+                    You can start from 10 minutes before your slot until 10 minutes after — outside that
+                    window you will need to rebook. Rescheduling is free and unlimited, right up until you start.
                   </Typography>
 
                   {rescheduling && bookedSlot && (
@@ -1004,14 +989,15 @@ const ExamSchedulePage = () => {
                     * reading a refusal.
                     */}
                   <PcbDateField
-                    type="datetime-local"
+                    type="date"
                     fullWidth
                     disablePast
+                    clearable={false}
                     min={pickerMin}
                     max={pickerMax}
-                    label="Exam date and time"
-                    value={scheduledTime}
-                    onChange={setScheduledTime}
+                    label="Exam date"
+                    value={slotDate}
+                    onChange={pickSlotDate}
                     sx={{ mt: 2.5 }}
                   />
 
@@ -1028,67 +1014,92 @@ const ExamSchedulePage = () => {
                       color: '#93AC9E'
                     }}
                   >
-                    Preferred timing
+                    Slots on this day
                   </Typography>
 
-                  <Box
-                    sx={{
-                      display: 'grid',
-                      gridTemplateColumns: { xs: 'repeat(2,minmax(0,1fr))', sm: 'repeat(3,minmax(0,1fr))' },
-                      gap: 1
-                    }}
-                  >
-                    {preferredSlots.map((slot) => {
-                      const selected = pickedTime === slot.time
-                      const unavailable = isSlotUnavailable(slot.time)
-                      return (
-                        <Box
-                          key={slot.time}
-                          component="button"
-                          type="button"
-                          disabled={unavailable}
-                          onClick={() => applyPreferredSlot(slot.time)}
-                          sx={{
-                            height: 40,
-                            borderRadius: '9px',
-                            fontFamily: fonts.mono,
-                            fontSize: 12,
-                            fontWeight: 600,
-                            cursor: unavailable ? 'not-allowed' : 'pointer',
-                            transition: 'background .15s, border-color .15s, color .15s',
-                            ...(selected
-                              ? {
-                                background: 'rgba(192,138,46,.16)',
-                                border: '1.5px solid rgba(192,138,46,.4)',
+                  {slotBoard.loading && <Skeleton variant="rounded" height={96} />}
+
+                  {!slotBoard.loading && slotBoard.error && (
+                    <Alert severity="warning">{slotBoard.error}</Alert>
+                  )}
+
+                  {!slotBoard.loading && !slotBoard.error && slotDate && slotBoard.slots.length === 0 && (
+                    <Typography sx={{ fontSize: 12.5, color: '#93AC9E' }}>
+                      No slots left to book on this day. Try another date.
+                    </Typography>
+                  )}
+
+                  {!slotBoard.loading && !slotBoard.error && slotBoard.slots.length > 0 && (
+                    <Box
+                      sx={{
+                        display: 'grid',
+                        gridTemplateColumns: { xs: 'repeat(2,minmax(0,1fr))', sm: 'repeat(3,minmax(0,1fr))' },
+                        gap: 1
+                      }}
+                    >
+                      {slotBoard.slots.map((slot) => {
+                        const selected = selectedSlot === slot.startsAt
+                        const full = slot.seatsLeft <= 0
+                        return (
+                          <Box
+                            key={slot.startsAt}
+                            component="button"
+                            type="button"
+                            disabled={full}
+                            aria-pressed={selected}
+                            onClick={() => {
+                              setError('')
+                              setSelectedSlot(slot.startsAt)
+                            }}
+                            sx={{
+                              py: 1,
+                              px: 0.5,
+                              borderRadius: '9px',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              alignItems: 'center',
+                              gap: '2px',
+                              fontFamily: fonts.mono,
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: full ? 'not-allowed' : 'pointer',
+                              transition: 'background .15s, border-color .15s, color .15s',
+                              ...(selected
+                                ? {
+                                  background: 'rgba(192,138,46,.16)',
+                                  border: '1.5px solid rgba(192,138,46,.4)',
+                                  color: tokens.copperLt
+                                }
+                                : {
+                                  background: 'transparent',
+                                  border: `1.5px solid ${tokens.line2}`,
+                                  color: '#93AC9E'
+                                }),
+                              // Dimmed and labelled "Full": a faded button beside
+                              // live ones would otherwise read as the selected one.
+                              ...(full && { opacity: 0.4 }),
+                              '&:hover:not(:disabled)': {
+                                borderColor: tokens.copper,
+                                background: 'rgba(192,138,46,.1)',
                                 color: tokens.copperLt
                               }
-                              : {
-                                background: 'transparent',
-                                border: `1.5px solid ${tokens.line2}`,
-                                color: '#93AC9E'
-                              }),
-                            ...(unavailable && {
-                              // Struck through rather than merely dimmed: a faded
-                              // button beside five identical ones reads as the
-                              // one that is selected, not the one that has gone.
-                              opacity: 0.4,
-                              textDecoration: 'line-through'
-                            }),
-                            '&:hover:not(:disabled)': {
-                              borderColor: tokens.copper,
-                              background: 'rgba(192,138,46,.1)',
-                              color: tokens.copperLt
-                            }
-                          }}
-                        >
-                          {slot.label}
-                        </Box>
-                      )
-                    })}
-                  </Box>
+                            }}
+                          >
+                            <Box component="span" sx={full ? { textDecoration: 'line-through' } : undefined}>
+                              {formatExamClock(slot.startsAt)} – {formatExamClock(slot.endsAt)}
+                            </Box>
+                            <Box component="span" sx={{ fontSize: 10.5, fontWeight: 500 }}>
+                              {full ? 'Full' : `${slot.seatsLeft} of ${slotBoard.capacity} seats left`}
+                            </Box>
+                          </Box>
+                        )
+                      })}
+                    </Box>
+                  )}
 
                   <Typography sx={{ mt: 1, fontSize: 11.5, color: '#93AC9E' }}>
-                    Quick picks for the day above — the field takes any time you like.
+                    Seats are counted when the day loads. If your slot fills before you confirm,
+                    you will be asked to pick another.
                   </Typography>
 
                   <Stack

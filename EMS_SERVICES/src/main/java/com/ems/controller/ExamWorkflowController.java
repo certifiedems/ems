@@ -1,9 +1,11 @@
 package com.ems.controller;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.validation.annotation.Validated;
@@ -12,6 +14,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.ems.dto.request.ExamProgressSaveRequest;
@@ -24,6 +27,7 @@ import com.ems.dto.response.ApiResponse;
 import com.ems.dto.response.ExamAttemptAllowanceResponse;
 import com.ems.dto.response.ExamProgressResponse;
 import com.ems.dto.response.ExamSessionQuestionResponse;
+import com.ems.dto.response.ExamSlotAvailabilityResponse;
 import com.ems.dto.response.ExamStartResponse;
 import com.ems.dto.response.ExamWorkflowApplicationResponse;
 import com.ems.dto.response.PaymentResponse;
@@ -113,6 +117,22 @@ public class ExamWorkflowController {
         String email = requireUser(authentication);
         return ok("Exam scheduled successfully",
                 examWorkflowService.scheduleExam(email, applicationId, request));
+    }
+
+    /**
+     * The slots an application's exam can be booked into between two instants,
+     * with the seats left in each. The client asks for the candidate's local day.
+     */
+    @GetMapping("/applications/{applicationId}/slots")
+    @Operation(summary = "List the exam slots an application can book, with the seats left in each")
+    public ResponseEntity<ApiResponse<ExamSlotAvailabilityResponse>> getSlotAvailability(
+            Authentication authentication,
+            @PathVariable Long applicationId,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant to) {
+        String email = requireUser(authentication);
+        return ok("Exam slots fetched successfully",
+                examWorkflowService.getSlotAvailability(email, applicationId, from, to));
     }
 
     /**

@@ -78,4 +78,14 @@ public interface PaymentRepository extends JpaRepository<Payment, Long> {
             @Param("paymentMethod") String paymentMethod,
             @Param("from") LocalDateTime from,
             @Param("to") LocalDateTime to);
+
+    /**
+     * Every successful payment as
+     * {@code [amount, currency, gatewayMode, paymentDate, createdDate]}, for the
+     * board analytics. Only the columns the revenue figures need, so the whole
+     * payment history can be tallied without loading candidates and exams.
+     */
+    @Query("SELECT p.amount, p.currency, p.gatewayMode, p.paymentDate, p.createdDate FROM Payment p "
+            + "WHERE p.paymentStatus = com.ems.enums.PaymentStatus.SUCCESS")
+    List<Object[]> findSuccessfulPaymentFigures();
 }

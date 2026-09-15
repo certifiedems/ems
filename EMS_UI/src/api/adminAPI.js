@@ -54,6 +54,21 @@ export const adminAPI = {
 	// resets, admin actions on users/payments/certificates, exam lifecycle.
 	getAuditLogs: (params) => apiClient.get('/admin/audit-logs', { params }),
 
+	// ----- Exam tracker (/api/admin/exam-tracker) -----
+	// Every paid or booked application with the stage it has reached (UPCOMING,
+	// LIVE, AWAITING_SLOT, MISSED, COMPLETED, TERMINATED, CLOSED). Unfiltered;
+	// the console groups and searches it.
+	getExamTracker: () => apiClient.get('/admin/exam-tracker'),
+
+	// One application end to end: payment, slot, session, every question its
+	// attempt drew with the candidate's answer and verdict, violations, certificate.
+	getExamTrackerBooking: (applicationId) => apiClient.get(`/admin/exam-tracker/${applicationId}`),
+
+	// ----- Board analytics (/api/admin/analytics) -----
+	// All-time totals plus `months` (1–36) of monthly trends. Pass the browser's
+	// `timeZone` so a payment or sign-up lands in the month the admin reads it in.
+	getAnalytics: (params) => apiClient.get('/admin/analytics', { params }),
+
 	// ----- Proctoring rules (/api/admin/proctoring-policies) -----
 	// The default rules apply to every exam without rules of its own. A save
 	// sends back the `version` it loaded; a 409 means another admin saved first.
