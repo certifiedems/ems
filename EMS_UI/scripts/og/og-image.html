@@ -1,0 +1,79 @@
+<!--
+  Source for public/og-image.jpg, the 1200x630 link-preview image.
+  Regenerate after editing (from EMS_UI/), then convert to JPEG to stay
+  under WhatsApp's ~300 KB preview limit:
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
+      --hide-scrollbars --virtual-time-budget=5000 --window-size=1200,630 \
+      --screenshot=og.png scripts/og/og-image.html
+    python3 -c "from PIL import Image; Image.open('og.png').convert('RGB').save('public/og-image.jpg', quality=88, optimize=True, progressive=True)"
+    rm og.png
+-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    color: #E9F3EE;
+    background:
+      radial-gradient(900px 640px at 16% 12%, rgba(14,77,60,.75), transparent 62%),
+      radial-gradient(720px 540px at 86% 84%, rgba(192,138,46,.18), transparent 60%),
+      linear-gradient(158deg,#05170F 0%,#03110C 55%,#061A12 100%);
+    position: relative;
+    padding: 72px 80px;
+  }
+  svg.traces { position: absolute; inset: 0; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 12px;
+    font: 500 18px 'JetBrains Mono', monospace; letter-spacing: 2px; color: #E8C071;
+    padding: 10px 18px; border-radius: 999px;
+    background: rgba(192,138,46,.12); border: 1px solid rgba(192,138,46,.4);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3FD3A0; box-shadow: 0 0 12px #3FD3A0; }
+  h1 { font-size: 78px; line-height: 1.02; letter-spacing: -2px; font-weight: 800; margin-top: 34px; position: relative; }
+  h1 span {
+    background: linear-gradient(96deg,#E8C071 0%,#C08A2E 45%,#5FAE92 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  p { margin-top: 22px; font-size: 27px; font-weight: 500; color: #A3C2B3; max-width: 820px; position: relative; }
+  .levels { display: flex; gap: 16px; margin-top: 44px; position: relative; }
+  .lvl {
+    display: flex; align-items: center; gap: 12px; padding: 14px 22px; border-radius: 14px;
+    background: rgba(14,77,60,.55); border: 1px solid rgba(192,138,46,.35);
+    font-size: 22px; color: #A3C2B3; font-weight: 500;
+  }
+  .lvl b { font: 500 23px 'JetBrains Mono', monospace; color: #E8C071; }
+  .url {
+    position: absolute; right: 80px; bottom: 64px;
+    font: 500 20px 'JetBrains Mono', monospace; color: #6D8D7F; letter-spacing: 1px;
+  }
+</style>
+</head>
+<body>
+  <!-- Decorative copper traces, echoing the app's PCB theme. -->
+  <svg class="traces" width="1200" height="630" viewBox="0 0 1200 630" fill="none">
+    <g stroke="#C08A2E" stroke-opacity=".35" stroke-width="2">
+      <path d="M1200 90H1060l-40 40v120" />
+      <path d="M1200 140h-100l-30 30v160h-60" />
+      <path d="M1200 200h-60l-20 20v230" />
+    </g>
+    <g fill="#03110C" stroke="#E8C071" stroke-opacity=".6" stroke-width="2">
+      <circle cx="1020" cy="250" r="6" /><circle cx="1010" cy="330" r="6" /><circle cx="1120" cy="450" r="6" />
+    </g>
+  </svg>
+
+  <div class="chip"><span class="dot"></span>PROCTORED ONLINE CERTIFICATION</div>
+  <h1>Certified <span>EMS Engineers</span></h1>
+  <p>Earn a verifiable credential in electronics manufacturing and industrial automation.</p>
+  <div class="levels">
+    <div class="lvl"><b>L1</b>Foundation</div>
+    <div class="lvl"><b>L2</b>Intermediate</div>
+    <div class="lvl"><b>L3</b>Advanced</div>
+  </div>
+  <div class="url">certifiedemsengineers.com</div>
+</body>
+</html>

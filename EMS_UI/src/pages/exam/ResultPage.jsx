@@ -9,6 +9,7 @@ import { examAPI } from '../../api/examAPI'
 import { certificateAPI } from '../../api/certificateAPI'
 import PageHeader from '../../components/common/PageHeader'
 import StatCard from '../../components/common/StatCard'
+import TestimonialPrompt from '../../components/testimonial/TestimonialPrompt'
 import CheckCircleIcon from '@mui/icons-material/CheckCircleRounded'
 import CancelIcon from '@mui/icons-material/CancelRounded'
 import WorkspacePremiumIcon from '@mui/icons-material/WorkspacePremiumRounded'
@@ -227,6 +228,8 @@ const ResultPage = () => {
           </Paper>
         </Grid>
       </Grid>
+
+      {passed && <TestimonialPrompt sx={{ mt: 3, mb: 0 }} />}
     </Box>
   )
 }

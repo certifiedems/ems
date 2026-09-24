@@ -38,6 +38,7 @@ import AdminBookingWindowsPage from './pages/admin/AdminBookingWindowsPage'
 import AdminQuestionsPage from './pages/admin/AdminQuestionsPage'
 import AdminViolationsPage from './pages/admin/AdminViolationsPage'
 import AdminProctoringRulesPage from './pages/admin/AdminProctoringRulesPage'
+import AdminTestimonialsPage from './pages/admin/AdminTestimonialsPage'
 import AdminExamAttemptsPage from './pages/admin/AdminExamAttemptsPage'
 import AdminExamTrackerPage from './pages/admin/AdminExamTrackerPage'
 import AdminExamTrackerDetailPage from './pages/admin/AdminExamTrackerDetailPage'
@@ -131,6 +132,7 @@ function App() {
                   <Route path="admin/payments" element={<AdminPaymentsPage />} />
                   <Route path="admin/violations" element={<AdminViolationsPage />} />
                   <Route path="admin/proctoring-rules" element={<AdminProctoringRulesPage />} />
+                  <Route path="admin/testimonials" element={<AdminTestimonialsPage />} />
                   <Route path="admin/exam-attempts" element={<AdminExamAttemptsPage />} />
                   <Route path="admin/exam-tracker" element={<AdminExamTrackerPage />} />
                   <Route path="admin/exam-tracker/:applicationId" element={<AdminExamTrackerDetailPage />} />

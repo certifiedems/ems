@@ -23,6 +23,7 @@ import com.ems.security.PasswordPolicyValidator;
 import com.ems.service.ProfilePhotoContent;
 import com.ems.service.ProfilePhotoStorageService;
 import com.ems.service.UserProfileService;
+import com.ems.util.UserIdGenerator;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +40,7 @@ public class UserProfileServiceImpl implements UserProfileService {
 	private final PasswordEncoder passwordEncoder;
 	private final PasswordPolicyValidator passwordPolicyValidator;
 	private final ProfilePhotoStorageService profilePhotoStorageService;
+	private final UserIdGenerator userIdGenerator;
 
 	@Override
 	public UserProfileResponse register(UserRegistrationRequest request) {
@@ -48,12 +50,17 @@ public class UserProfileServiceImpl implements UserProfileService {
 		Role userRole = roleRepository.findByName(RoleName.USER)
 				.orElseThrow(() -> new ResourceNotFoundException("Default USER role is missing"));
 
+		String userId = userIdGenerator.generate(
+				request.getFirstName(),
+				request.getLastName(),
+				request.getEmail());
+
 		String profilePhotoKey = profilePhotoStorageService.storeProfilePhoto(
 				request.getProfilePhoto(),
-				request.getUserId());
+				userId);
 
 		User user = User.builder()
-				.userId(request.getUserId().trim())
+				.userId(userId)
 				.firstName(request.getFirstName().trim())
 				.lastName(request.getLastName().trim())
 				.email(request.getEmail().trim().toLowerCase())
@@ -143,13 +150,9 @@ public class UserProfileServiceImpl implements UserProfileService {
 	}
 
 	private void validateRegistration(UserRegistrationRequest request) {
-		String userId = request.getUserId().trim();
 		String email = request.getEmail().trim().toLowerCase();
 		String mobile = request.getMobileNumber().trim();
 
-		if (userRepository.existsByUserId(userId)) {
-			throw new BusinessException("User ID already exists", HttpStatus.CONFLICT);
-		}
 		if (userRepository.existsByEmailIgnoreCase(email)) {
 			throw new BusinessException("Email already exists", HttpStatus.CONFLICT);
 		}

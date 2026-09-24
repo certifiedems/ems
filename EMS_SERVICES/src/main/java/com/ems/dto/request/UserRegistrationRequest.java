@@ -8,14 +8,14 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+/**
+ * The user id is not accepted from the caller: it is derived from the name and
+ * email by {@link com.ems.util.UserIdGenerator} once registration validates.
+ */
 @Getter
 @Setter
 @NoArgsConstructor
 public class UserRegistrationRequest {
-
-    @NotBlank
-    @Size(max = 50)
-    private String userId;
 
     @NotBlank
     @Size(max = 100)

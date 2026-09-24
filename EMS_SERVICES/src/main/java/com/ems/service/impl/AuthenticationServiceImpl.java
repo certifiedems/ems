@@ -46,6 +46,7 @@ import com.ems.service.AuditService;
 import com.ems.service.AuthenticationService;
 import com.ems.service.ProfilePhotoStorageService;
 import com.ems.util.TokenHashUtil;
+import com.ems.util.UserIdGenerator;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -71,6 +72,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 	private final PasswordPolicyValidator passwordPolicyValidator;
 	private final ProfilePhotoStorageService profilePhotoStorageService;
 	private final AuditService auditService;
+	private final UserIdGenerator userIdGenerator;
 
 	@Override
 	public AuthResponse register(RegisterRequest request) {
@@ -80,12 +82,17 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 		Role userRole = roleRepository.findByName(RoleName.USER)
 				.orElseThrow(() -> new ResourceNotFoundException("Default USER role is missing"));
 
+		String userId = userIdGenerator.generate(
+				request.firstName(),
+				request.lastName(),
+				request.email());
+
 		String profilePhotoKey = profilePhotoStorageService.storeProfilePhoto(
 				request.profilePhoto(),
-				request.userId());
+				userId);
 
 		User user = User.builder()
-				.userId(request.userId().trim())
+				.userId(userId)
 				.firstName(request.firstName().trim())
 				.lastName(request.lastName().trim())
 				.email(request.email().trim().toLowerCase())
@@ -351,16 +358,12 @@ public class AuthenticationServiceImpl implements AuthenticationService {
 	private void validateRegistrationRequest(RegisterRequest request) {
 		String email = request.email().trim().toLowerCase();
 		String mobile = request.mobileNumber().trim();
-		String userId = request.userId().trim();
 
 		if (userRepository.existsByEmailIgnoreCase(email)) {
 			throw new BusinessException("Email already registered");
 		}
 		if (userRepository.existsByMobileNumber(mobile)) {
 			throw new BusinessException("Mobile number already registered");
-		}
-		if (userRepository.existsByUserId(userId)) {
-			throw new BusinessException("User ID already exists");
 		}
 	}
 

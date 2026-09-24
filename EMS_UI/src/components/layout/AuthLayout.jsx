@@ -4,12 +4,13 @@ import { Box, Typography } from '@mui/material'
 import PcbBackdrop from '../brand/PcbBackdrop'
 import BrandMark from '../brand/BrandMark'
 import SupportEmailLink from '../common/SupportEmailLink'
+import TestimonialShowcase from '../testimonial/TestimonialShowcase'
 import { tokens, fonts, gradients, shadows } from '../../styles/tokens'
 
 const LEVELS = [
   { code: 'L1', name: 'Foundation' },
-  { code: 'L2', name: 'Advanced' },
-  { code: 'L3', name: 'Master' },
+  { code: 'L2', name: 'Intermediate' },
+  { code: 'L3', name: 'Advanced' },
 ]
 
 const STATS = [
@@ -288,6 +289,9 @@ const AuthLayout = ({ title, subtitle, children, stamp = 'EMS-AUTH v2.4', wide =
               </Box>
             ))}
           </Box>
+
+          {/* Approved candidate quotes; renders nothing until there is one. */}
+          <TestimonialShowcase />
         </Box>
 
         <Box

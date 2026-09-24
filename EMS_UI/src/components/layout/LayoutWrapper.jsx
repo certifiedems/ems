@@ -29,6 +29,7 @@ import TableChartIcon from '@mui/icons-material/TableChartRounded'
 import PaidIcon from '@mui/icons-material/PaidRounded'
 import HistoryRounded from '@mui/icons-material/HistoryRounded'
 import MailOutlineIcon from '@mui/icons-material/MailOutlineRounded'
+import FormatQuoteIcon from '@mui/icons-material/FormatQuoteRounded'
 import { logout } from '../../store/slices/authSlice'
 import { authAPI } from '../../api/authAPI'
 import { useIdleTimeout, clearIdleStamp } from '../../hooks/useIdleTimeout'
@@ -81,6 +82,7 @@ const LayoutWrapper = ({ children }) => {
     { label: 'Violations', icon: <GavelIcon />, path: '/admin/violations' },
     // Under Violations: what was recorded, then the rules that decide what is.
     { label: 'Proctoring Rules', icon: <TuneIcon />, path: '/admin/proctoring-rules' },
+    { label: 'Testimonials', icon: <FormatQuoteIcon />, path: '/admin/testimonials' },
     { label: 'Audit Log', icon: <HistoryRounded />, path: '/admin/audit-log' },
     { label: 'Reports', icon: <AnalyticsIcon />, path: '/admin/reports' }
   ]

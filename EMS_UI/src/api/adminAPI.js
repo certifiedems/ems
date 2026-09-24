@@ -69,6 +69,18 @@ export const adminAPI = {
 	// `timeZone` so a payment or sign-up lands in the month the admin reads it in.
 	getAnalytics: (params) => apiClient.get('/admin/analytics', { params }),
 
+	// ----- Testimonials (/api/admin/testimonials) -----
+	// `status` (PENDING | APPROVED | REJECTED) is optional; omitted lists all.
+	getTestimonials: (params) => apiClient.get('/admin/testimonials', { params }),
+
+	// { status: 'APPROVED' | 'REJECTED', reviewNote? }. The note is shown to the candidate.
+	reviewTestimonial: (testimonialId, data) =>
+		apiClient.patch(`/admin/testimonials/${testimonialId}/status`, data),
+
+	// { editedQuote } fixes typos; the candidate's original is kept. Blank restores it.
+	editTestimonialQuote: (testimonialId, editedQuote) =>
+		apiClient.patch(`/admin/testimonials/${testimonialId}/quote`, { editedQuote }),
+
 	// ----- Proctoring rules (/api/admin/proctoring-policies) -----
 	// The default rules apply to every exam without rules of its own. A save
 	// sends back the `version` it loaded; a 409 means another admin saved first.

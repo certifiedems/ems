@@ -95,6 +95,9 @@ public class SecurityConfig {
                                 "/api/auth/reset-password",
                                 "/api/users/register",
                                 "/api/certificates/verify/**",
+                                // Approved quotes for the sign-in screen, which
+                                // visitors see before they have an account.
+                                "/api/testimonials/public",
                                 // Razorpay holds no JWT; the endpoint authenticates
                                 // the caller by HMAC over the raw body instead.
                                 "/api/payments/webhooks/**",

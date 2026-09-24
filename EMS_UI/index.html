@@ -5,7 +5,78 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#03110C" />
-    <title>Certified EMS Engineers</title>
+    <title>Certified EMS Engineers – L1, L2 &amp; L3 Engineer Certification</title>
+    <meta
+      name="description"
+      content="Get certified as an EMS and automation engineer. Sit a proctored online exam at L1 Foundation, L2 Intermediate or L3 Advanced and earn a verifiable credential."
+    />
+
+    <!-- Social previews (LinkedIn, WhatsApp, X, Slack) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Certified EMS Engineers" />
+    <meta property="og:url" content="https://www.certifiedemsengineers.com/" />
+    <meta property="og:title" content="Certified EMS Engineers – L1, L2 &amp; L3 Engineer Certification" />
+    <meta
+      property="og:description"
+      content="Proctored online certification for EMS and automation engineers. Three levels, a published syllabus, and a credential anyone can verify."
+    />
+    <meta property="og:image" content="https://www.certifiedemsengineers.com/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Certified EMS Engineers: proctored online certification at L1 Foundation, L2 Intermediate and L3 Advanced." />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://www.certifiedemsengineers.com/og-image.jpg" />
+
+    <!--
+      Structured data: tells search engines this is an education provider
+      offering three certification courses. Module lists mirror
+      src/data/syllabus.js; update both together on a curriculum revision.
+    -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "EducationalOrganization",
+            "@id": "https://www.certifiedemsengineers.com/#org",
+            "name": "Certified EMS Engineers",
+            "url": "https://www.certifiedemsengineers.com/",
+            "email": "info@certifiedemsengineers.com"
+          },
+          {
+            "@type": "WebSite",
+            "name": "Certified EMS Engineers",
+            "url": "https://www.certifiedemsengineers.com/",
+            "publisher": { "@id": "https://www.certifiedemsengineers.com/#org" }
+          },
+          {
+            "@type": "Course",
+            "name": "L1 Foundation – EMS Engineer Certification",
+            "courseCode": "L1",
+            "description": "Electrical fundamentals, power distribution, protection devices, transformers, motors and starters, sensors, panels and drawings, SMT foundation, electrical safety, and basic pneumatics.",
+            "educationalLevel": "Beginner",
+            "provider": { "@id": "https://www.certifiedemsengineers.com/#org" }
+          },
+          {
+            "@type": "Course",
+            "name": "L2 Intermediate – EMS Engineer Certification",
+            "courseCode": "L2",
+            "description": "Power quality, drives and motion control, industrial instrumentation, PLC programming and troubleshooting, industrial communications, control fundamentals, SMT process engineering, EMI and panel engineering, and structured fault finding.",
+            "educationalLevel": "Intermediate",
+            "provider": { "@id": "https://www.certifiedemsengineers.com/#org" }
+          },
+          {
+            "@type": "Course",
+            "name": "L3 Advanced – EMS Engineer Certification",
+            "courseCode": "L3",
+            "description": "Line qualification and process validation, SPC and Six Sigma, failure analysis, DFM/DFT, new product introduction, SCADA, OT security, robotics, energy compliance, and technical leadership.",
+            "educationalLevel": "Advanced",
+            "provider": { "@id": "https://www.certifiedemsengineers.com/#org" }
+          }
+        ]
+      }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -15,10 +86,99 @@
     <style>
       /* Paint the substrate before React mounts so there is no white flash. */
       html, body { background-color: #03110C; }
+
+      /* Static landing content: styled to the app's palette, since it shows until React mounts. */
+      .seo-shell { max-width: 880px; margin: 0 auto; padding: 48px 16px; color: #A9BFB4; font: 16px/1.65 'Plus Jakarta Sans', system-ui, sans-serif; }
+      .seo-shell h1 { color: #EAF3EE; font-size: clamp(30px, 5vw, 46px); line-height: 1.1; margin: 0 0 16px; }
+      .seo-shell h2 { color: #EAF3EE; font-size: 22px; margin: 36px 0 8px; }
+      .seo-shell h3 { color: #D9A64E; font-size: 17px; margin: 20px 0 4px; }
+      .seo-shell ul { margin: 0; padding-left: 20px; }
+      .seo-shell a { color: #5FAE92; }
+      .seo-shell .cta a { display: inline-block; margin: 20px 12px 0 0; padding: 10px 18px; border: 1px solid #5FAE92; border-radius: 10px; text-decoration: none; }
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <!--
+      Everything inside #root is replaced when React mounts. It is here for
+      crawlers and link previews that don't run JavaScript, and so visitors on
+      slow connections see what the site is instead of a blank page.
+    -->
+    <div id="root">
+      <main class="seo-shell">
+        <h1>Certified EMS Engineers: L1, L2 &amp; L3 Engineer Certification</h1>
+        <p>
+          Prove your skills in electronics manufacturing and industrial automation. Sit a proctored,
+          industry-benchmarked online assessment, earn a credential anyone can verify instantly, and
+          show employers you are a certified L1, L2 or L3 engineer.
+        </p>
+        <p class="cta">
+          <a href="/register">Start your L1 certification</a>
+          <a href="/login">Sign in</a>
+        </p>
+
+        <h2>Who it's for</h2>
+        <p>
+          Technicians and engineers working in electronics manufacturing services (EMS), SMT lines,
+          control panels, PLCs and plant automation who want a recognised, verifiable proof of skill,
+          from first job to technical leadership.
+        </p>
+
+        <h2>How certification works</h2>
+        <ul>
+          <li>Create an account and apply for your level.</li>
+          <li>Study the published syllabus for that level.</li>
+          <li>Book an exam slot and sit a remotely proctored online assessment.</li>
+          <li>Pass to receive a digital certificate with a verifiable credential.</li>
+        </ul>
+
+        <h2>Certification levels and syllabus</h2>
+
+        <h3>L1 Foundation</h3>
+        <ul>
+          <li>Electrical fundamentals</li>
+          <li>Power distribution basics</li>
+          <li>Protection and switching devices</li>
+          <li>Transformers and power supplies</li>
+          <li>Motors and starters</li>
+          <li>Sensors</li>
+          <li>Cables, panels and drawings</li>
+          <li>SMT foundation and IPC-A-610</li>
+          <li>Workplace and electrical safety</li>
+          <li>Basic mechanics and pneumatics</li>
+        </ul>
+
+        <h3>L2 Intermediate</h3>
+        <ul>
+          <li>Power quality and machines</li>
+          <li>Drives and motion control</li>
+          <li>Industrial instrumentation</li>
+          <li>PLC systems and programming</li>
+          <li>PLC troubleshooting</li>
+          <li>Industrial communications</li>
+          <li>Control fundamentals</li>
+          <li>SMT process engineering</li>
+          <li>Cables, EMI and panel engineering</li>
+          <li>Structured fault finding</li>
+        </ul>
+
+        <h3>L3 Advanced</h3>
+        <ul>
+          <li>Line qualification and process validation</li>
+          <li>Statistical process control and Six Sigma</li>
+          <li>Failure analysis and root cause</li>
+          <li>DFM / DFT leadership</li>
+          <li>New product introduction management</li>
+          <li>Advanced control, SCADA and data</li>
+          <li>Network architecture and OT security</li>
+          <li>Robotics and advanced automation</li>
+          <li>Power quality, energy and compliance</li>
+          <li>Audit, compliance and technical leadership</li>
+        </ul>
+
+        <h2>Contact</h2>
+        <p><a href="mailto:info@certifiedemsengineers.com">info@certifiedemsengineers.com</a></p>
+      </main>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

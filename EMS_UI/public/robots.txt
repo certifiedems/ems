@@ -1,0 +1,15 @@
+User-agent: *
+Allow: /
+# Signed-in areas: nothing public to index, and they redirect to sign-in anyway.
+Disallow: /admin/
+Disallow: /dashboard
+Disallow: /profile
+Disallow: /certifications
+Disallow: /certificates
+Disallow: /exams
+Disallow: /exam/
+Disallow: /exam-reports
+Disallow: /reports
+Disallow: /reset-password/
+
+Sitemap: https://www.certifiedemsengineers.com/sitemap.xml

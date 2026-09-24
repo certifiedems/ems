@@ -20,6 +20,7 @@ import { useProfilePhoto } from '../../contexts/ProfilePhotoContext'
 import PageHeader from '../../components/common/PageHeader'
 import PcbSelect from '../../components/common/PcbSelect'
 import ProfilePhotoDialog from '../../components/profile/ProfilePhotoDialog'
+import MyTestimonials from '../../components/testimonial/MyTestimonials'
 import { tokens, fonts, ctaButton } from '../../styles/tokens'
 
 const SKILL_LEVELS = ['L1', 'L2', 'L3']
@@ -703,6 +704,8 @@ const ProfilePage = () => {
           </Box>
         </Box>
       </Box>
+
+      <MyTestimonials />
     </Box>
   )
 }

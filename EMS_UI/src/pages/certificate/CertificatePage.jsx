@@ -13,6 +13,7 @@ import { getBlobApiErrorMessage } from '../../utils/apiError'
 import CertificateDocument from '../../components/certificate/CertificateDocument'
 import EmptyState from '../../components/common/EmptyState'
 import PageHeader from '../../components/common/PageHeader'
+import TestimonialPrompt from '../../components/testimonial/TestimonialPrompt'
 import { fonts, tiers, tierForLevel, tokens } from '../../styles/tokens'
 import { formatCertificateDate, isExpired, nextExpiry, validityOf } from '../../utils/certificateValidity'
 
@@ -254,6 +255,8 @@ const CertificatePage = () => {
           {downloadError}
         </Alert>
       )}
+
+      {!loading && ordered.length > 0 && <TestimonialPrompt />}
 
       {loading ? (
         <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: '280px minmax(0,1fr)' }, gap: 2.5 }}>

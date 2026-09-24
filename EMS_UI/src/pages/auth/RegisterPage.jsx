@@ -13,7 +13,6 @@ import PcbField from '../../components/common/PcbField'
 import { tokens, ctaButton } from '../../styles/tokens'
 
 const schema = yup.object().shape({
-  userId: yup.string().required('User ID is required').min(4, 'Minimum 4 characters'),
   firstName: yup.string().required('First name is required'),
   lastName: yup.string().required('Last name is required'),
   email: yup.string().email('Invalid email').required('Email is required'),
@@ -39,8 +38,8 @@ const schema = yup.object().shape({
 const SKILL_LEVELS = [
   { value: '', label: 'Select level' },
   { value: 'L1', label: 'L1 · Foundation' },
-  { value: 'L2', label: 'L2 · Advanced' },
-  { value: 'L3', label: 'L3 · Master' }
+  { value: 'L2', label: 'L2 · Intermediate' },
+  { value: 'L3', label: 'L3 · Advanced' }
 ]
 
 const RegisterPage = () => {
@@ -54,8 +53,7 @@ const RegisterPage = () => {
   const onSubmit = async (data) => {
     dispatch(registerStart())
     try {
-      await authAPI.register({
-        userId: data.userId,
+      const response = await authAPI.register({
         firstName: data.firstName,
         lastName: data.lastName,
         email: data.email,
@@ -69,7 +67,14 @@ const RegisterPage = () => {
         fatherName: data.fatherName
       })
       dispatch(registerSuccess())
-      navigate('/login')
+      // The user ID is minted from the name and email server-side, so this is
+      // the first and only place the new account hears what it is.
+      const userId = response?.data?.data?.user?.userId
+      navigate('/login', {
+        state: userId
+          ? { authNotice: `Account created. Your user ID is ${userId} — sign in with your email.` }
+          : null
+      })
     } catch (err) {
       dispatch(registerFailure(getApiErrorMessage(err, 'Registration failed. Please try again.')))
     }
@@ -86,10 +91,6 @@ const RegisterPage = () => {
 
       <Box component="form" onSubmit={handleSubmit(onSubmit)} noValidate>
         <Grid container columnSpacing={2}>
-          <Grid item xs={12}>
-            <PcbField dense label="User ID" placeholder="Choose a unique ID"
-              error={errors.userId?.message} {...register('userId')} />
-          </Grid>
           <Grid item xs={12} sm={6}>
             <PcbField dense label="First name" error={errors.firstName?.message} {...register('firstName')} />
           </Grid>
