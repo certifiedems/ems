@@ -33,14 +33,14 @@ const COLORS = {
  * come out as mojibake. Folding them to ASCII equivalents keeps the generated
  * document readable without embedding a full Unicode font.
  */
-const toAscii = (value) =>
+export const toAscii = (value) =>
   String(value)
     .replace(/[–—]/g, '-')
     .replace(/[‘’]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/…/g, '...')
     .replace(/·/g, '-')
-    .replace(/ /g, ' ')
+    .replace(/[\u00A0\u202F]/g, ' ')
 
 /** Draws the page title block. Returns the y cursor below it. */
 const drawTitle = (doc, syllabus) => {
